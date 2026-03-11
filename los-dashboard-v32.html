@@ -1,0 +1,2546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LOS Dashboard v32</title>
+  <script>window.tailwind={config:{theme:{extend:{colors:{slate:{950:"#020617",900:"#0f172a",800:"#1e293b",700:"#334155",600:"#475569",500:"#64748b",400:"#94a3b8",300:"#cbd5e1"}}}}}};</script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: #253040; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #4a6075; border-radius: 3px; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
+  </style>
+</head>
+<body class="bg-[#1a2332]">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useReducer, useRef, useEffect, createContext, useContext } = React;
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GLOBAL IN-SESSION STORE
+    // Holds all mutable state so changes persist across navigation.
+    // appStore[id] = { aidDocs, avdDocs, contractFiles, events,
+    //                  customerPullDocs, customerOpsDocs, customerPullStatus,
+    //                  customerBureauCsv, guarantorPullDocs, guarantorOpsDocs,
+    //                  guarantorPullStatus, guarantorBureauCsv, guarantorBvn,
+    //                  foUploadPermission }
+    // ═══════════════════════════════════════════════════════════════════════
+    const StoreContext = createContext(null);
+
+    const storeReducer = (state, action) => {
+      switch (action.type) {
+        // ── Application core fields (status, assignees, details) ──────────
+        case 'UPDATE_APP': {
+          const apps = state.applications.map(a =>
+            a.id === action.id ? { ...a, ...action.patch, updatedAt: new Date().toISOString() } : a
+          );
+          return { ...state, applications: apps };
+        }
+        // ── Bootstrap per-app sub-state on first open ────────────────────
+        case 'INIT_APP_STORE': {
+          if (state.appStore[action.id]) return state; // already initialised
+          return {
+            ...state,
+            appStore: { ...state.appStore, [action.id]: action.data }
+          };
+        }
+        // ── Generic patch for any appStore[id] key ───────────────────────
+        case 'PATCH_APP_STORE': {
+          const existing = state.appStore[action.id] || {};
+          return {
+            ...state,
+            appStore: { ...state.appStore, [action.id]: { ...existing, ...action.patch } }
+          };
+        }
+        // ── Document mutations ────────────────────────────────────────────
+        case 'UPLOAD_DOC': {
+          const { appId, section, docId, file } = action;
+          const store = state.appStore[appId] || {};
+          const key = section === 'aid' ? 'aidDocs' : 'avdDocs';
+          const docs = (store[key] || []).map(d =>
+            d.id === docId
+              ? { ...d, files: [...(d.files||[]), { id: `${docId}-${Date.now()}`, name: file.name, size: file.size, url: file.__url || null }] }
+              : d
+          );
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, [key]: docs } } };
+        }
+        case 'DELETE_DOC': {
+          const { appId, section, docId, fileId } = action;
+          const store = state.appStore[appId] || {};
+          const key = section === 'aid' ? 'aidDocs' : 'avdDocs';
+          const docs = (store[key] || []).map(d =>
+            d.id === docId ? { ...d, files: d.files.filter(f => f.id !== fileId) } : d
+          );
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, [key]: docs } } };
+        }
+        // ── Contract files ───────────────────────────────────────────────
+        case 'UPLOAD_CONTRACT': {
+          const { appId, file } = action;
+          const store = state.appStore[appId] || {};
+          const contractFiles = [...(store.contractFiles || []),
+            { id: `contract-${Date.now()}-${Math.random().toString(36).slice(2)}`, name: file.name, size: file.size, url: null }
+          ];
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, contractFiles } } };
+        }
+        case 'DELETE_CONTRACT': {
+          const { appId, fileId } = action;
+          const store = state.appStore[appId] || {};
+          const contractFiles = (store.contractFiles || []).filter(f => f.id !== fileId);
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, contractFiles } } };
+        }
+        // ── Credit ops docs ──────────────────────────────────────────────
+        case 'UPLOAD_CREDIT_OPS': {
+          const { appId, side, file } = action; // side: 'customer' | 'guarantor'
+          const store = state.appStore[appId] || {};
+          const key = side === 'customer' ? 'customerOpsDocs' : 'guarantorOpsDocs';
+          const docs = [...(store[key]||[]), { id:`${side}-ops-${Date.now()}`, name:file.name, size:file.size, url:null }];
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, [key]: docs } } };
+        }
+        case 'DELETE_CREDIT_OPS': {
+          const { appId, side, fileId } = action;
+          const store = state.appStore[appId] || {};
+          const key = side === 'customer' ? 'customerOpsDocs' : 'guarantorOpsDocs';
+          const docs = (store[key]||[]).filter(f => f.id !== fileId);
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, [key]: docs } } };
+        }
+        // ── Events (activity history) ────────────────────────────────────
+        case 'ADD_EVENT': {
+          const { appId, event } = action;
+          const store = state.appStore[appId] || {};
+          const events = [event, ...(store.events || [])];
+          return { ...state, appStore: { ...state.appStore, [appId]: { ...store, events } } };
+        }
+        // ── Leads ────────────────────────────────────────────────────────
+        case 'UPDATE_LEAD':
+          return { ...state, leads: state.leads.map(l => l.id === action.lead.id ? action.lead : l) };
+        case 'CREATE_LEAD':
+          return { ...state, leads: [action.lead, ...state.leads] };
+        // ── Users ────────────────────────────────────────────────────────
+        case 'UPDATE_USER':
+          return { ...state, users: state.users.map(u => u.id === action.user.id ? action.user : u) };
+        case 'CREATE_USER':
+          return { ...state, users: [...state.users, action.user] };
+        // ── Auto Assignment ───────────────────────────────────────────────
+        case 'SAVE_ASSIGNMENT_CONFIG':
+          return { ...state, assignmentConfig: { ...state.assignmentConfig, [action.stageId]: action.config } };
+        case 'RECORD_ASSIGNMENT': {
+          const prev = state.assignedApps[action.appId] || [];
+          return { ...state, assignedApps: { ...state.assignedApps, [action.appId]: [...prev, action.stageId] } };
+        }
+        default:
+          return state;
+      }
+    };
+
+    const useStore = () => useContext(StoreContext);
+
+
+    const formatDate = (dateString) => {
+      if (!dateString) return '—';
+      const date = new Date(dateString);
+      return `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}/${date.getFullYear()}`;
+    };
+    const formatDateTime = (dateString) => {
+      if (!dateString) return '—';
+      const date = new Date(dateString);
+      return `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}/${date.getFullYear()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+    };
+
+    const toPascal = s => s.replace(/(^\w|-\w)/g, c => c.replace('-','').toUpperCase());
+    const Icon = ({ name, size = 18, className = "" }) => {
+      const iconRef = useRef(null);
+      useEffect(() => {
+        if (!iconRef.current) return;
+        iconRef.current.innerHTML = '';
+        try {
+          const iconDef = lucide[toPascal(name)];
+          if (!iconDef) return;
+          const [,, children] = iconDef;
+          const ns = 'http://www.w3.org/2000/svg';
+          const svg = document.createElementNS(ns, 'svg');
+          svg.setAttribute('width', size); svg.setAttribute('height', size);
+          svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+          svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+          svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+          (children || []).forEach(([tag, attrs]) => {
+            const el = document.createElementNS(ns, tag);
+            Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, v));
+            svg.appendChild(el);
+          });
+          iconRef.current.appendChild(svg);
+        } catch(e) {}
+      }, [name, size]);
+      return <span ref={iconRef} className={`inline-flex items-center justify-center ${className}`} style={{ color: 'inherit' }} />;
+    };
+
+    // ─── Role Definitions ───────────────────────────────────────────────────
+    const ROLES = {
+      ARO:        { label: 'Application Review Officer', color: 'amber' },
+      UW:         { label: 'Underwriter',                color: 'blue' },
+      OM:         { label: 'Ops Manager',                color: 'violet' },
+      FM:         { label: 'Finance Manager',            color: 'cyan' },
+      ADMIN_OPS:  { label: 'Admin Ops',                  color: 'emerald' },
+      ADMIN_HEAD: { label: 'Admin Head',                 color: 'rose' },
+      EXTERNAL:   { label: 'External User',              color: 'slate' },
+    };
+
+    const DEMO_USERS = [
+      { id:'u1', name:'Aisha Mohammed',   email:'aisha@fairmoney.ng',   role:'ARO',        status:'Active',   createdOn:'2024-01-10' },
+      { id:'u2', name:'Biodun Ogunleye',  email:'biodun@fairmoney.ng',  role:'UW',         status:'Active',   createdOn:'2024-01-12' },
+      { id:'u3', name:'Chioma Nwosu',     email:'chioma@fairmoney.ng',  role:'OM',         status:'Active',   createdOn:'2024-01-15' },
+      { id:'u4', name:'David Okonkwo',    email:'david@fairmoney.ng',   role:'FM',         status:'Active',   createdOn:'2024-02-01' },
+      { id:'u5', name:'Emeka Ibe',        email:'emeka@fairmoney.ng',   role:'ADMIN_OPS',  status:'Active',   createdOn:'2024-02-05' },
+      { id:'u6', name:'Folake Adebisi',   email:'folake@fairmoney.ng',  role:'ADMIN_HEAD', status:'Active',   createdOn:'2024-01-05' },
+      { id:'u7', name:'Grace Obi',        email:'grace@external.com',   role:'EXTERNAL',   status:'Active',   createdOn:'2024-03-01' },
+      { id:'u8', name:'Hassan Yusuf',     email:'hassan@fairmoney.ng',  role:'ARO',        status:'Inactive', createdOn:'2024-03-10' },
+      { id:'u9', name:'Tunde Badmus',      email:'tunde@fairmoney.ng',   role:'ARO',        roles:['ARO','FM'],        status:'Active',   createdOn:'2024-04-01' },
+      { id:'u10',name:'Kemi Adeyemi',     email:'kemi@fairmoney.ng',    role:'ARO',        roles:['ARO','UW','OM'],   status:'Active',   createdOn:'2024-04-15' },
+    ];
+
+    // Which user to switch to for login demo
+    const LOGIN_PERSONAS = [
+      { userId:'u1', role:'ARO'        },
+      { userId:'u2', role:'UW'         },
+      { userId:'u3', role:'OM'         },
+      { userId:'u4', role:'FM'         },
+      { userId:'u5', role:'ADMIN_OPS'  },
+      { userId:'u6', role:'ADMIN_HEAD' },
+      { userId:'u7', role:'EXTERNAL'   },
+      { userId:'u9', role:'ARO'         },
+      { userId:'u10',role:'ARO'         },
+    ];
+
+
+    // ─── Auto Assignment defaults ────────────────────────────────────────────
+    // Default role → stage mapping. Configurable per stage in the module.
+    const AUTO_ASSIGNMENT_STAGES = [
+      { id:'Application Review', defaultRoles:['ARO'] },
+      { id:'Credit Review',      defaultRoles:['UW']  },
+      { id:'Approved',           defaultRoles:['OM']  },
+      { id:'Loan Ready',         defaultRoles:['FM']  },
+    ];
+
+    // Build initial assignment config from DEMO_USERS
+    const buildInitialAssignmentConfig = (users) => {
+      const cfg = {};
+      AUTO_ASSIGNMENT_STAGES.forEach(stage => {
+        const eligible = users.filter(u => {
+          const userRoles = u.roles || [u.role];
+          return stage.defaultRoles.some(r => userRoles.includes(r));
+        });
+        const weights = {};
+        // Equal distribution across active users, inactive → 0
+        const activeCount = eligible.filter(u=>u.status==='Active').length;
+        let remaining = 100;
+        eligible.forEach((u, i) => {
+          if(u.status !== 'Active') { weights[u.id] = 0; return; }
+          const isLast = i === eligible.length - 1 || eligible.slice(i+1).every(x=>x.status!=='Active');
+          const share = isLast ? remaining : Math.floor(100/activeCount);
+          weights[u.id] = share;
+          remaining -= share;
+        });
+        cfg[stage.id] = { roles: [...stage.defaultRoles], weights };
+      });
+      return cfg;
+    };
+
+    // ─── Constants ──────────────────────────────────────────────────────────
+    const fieldOfficers = ['Adebayo Ojo','Chinedu Okoro','Fatima Bello','Ibrahim Suleiman','Kunle Adeyemi','Ngozi Eze','Olumide Taiwo','Rasheed Bello','Sade Williams','Tunde Afolabi'];
+    const recoveryOfficers = ['Yemi Ogundimu','Zainab Abdullahi','Kola Adewale','Pius Ezeh','Amaka Obi'];
+    const backOfficeUsers = ['Aisha Mohammed','Biodun Ogunleye','Chioma Nwosu','David Okonkwo','Emeka Ibe','Folake Adebisi','Grace Obi','Hassan Yusuf'];
+    const productTypes = ['Okada','Keke','Personal 2-wheeler','Multiple Assets'];
+    const brands = ['Bajaj','TVS','Yamaha','Hero','Piaggio','Undecided'];
+    const areas = ['Lagos Island','Victoria Island','Ikeja','Lekki','Surulere','Yaba','Apapa','Ikorodu','Oshodi','Mushin'];
+    const applicationStatuses = ['Created','In Progress','Application Review','Credit Review','Approved','Loan Ready','Disbursed','Rejected'];
+    const leadStatuses = ['Created','Application','Not Interested'];
+    const nigerianNames = ['Adebayo Johnson','Chioma Okafor','Emeka Nwosu','Fatima Ibrahim','Gbenga Adeyemi','Halima Yusuf','Ibrahim Musa','Jumoke Adeleke','Kemi Bakare','Lanre Ojo'];
+
+    // ─── Mock Data ──────────────────────────────────────────────────────────
+    const generateMockApplications = () => {
+      // Realistic BO→status mapping for prototype
+      const boStatusMap = [
+        { bo:'Aisha Mohammed',  statuses:['Application Review'] },
+        { bo:'Biodun Ogunleye', statuses:['Credit Review'] },
+        { bo:'Chioma Nwosu',    statuses:['Approved'] },
+        { bo:'David Okonkwo',   statuses:['Loan Ready','Disbursed'] },
+        { bo:'Tunde Badmus',    statuses:['Application Review','Loan Ready','Disbursed'] },
+      ];
+      // Build pool of cases-per-BO-user, then fill rest with nullBO + any status
+      let cases = [];
+      let idx = 0;
+      boStatusMap.forEach(mapping => {
+        const count = mapping.bo === 'Tunde Badmus' ? 8 : 10;
+        for (let j=0;j<count;j++,idx++) {
+          const status = mapping.statuses[Math.floor(Math.random()*mapping.statuses.length)];
+          const customerName = nigerianNames[Math.floor(Math.random()*nigerianNames.length)];
+          const hasRO = Math.random()>0.15;
+          cases.push({
+            id: String(10000001+idx), name:customerName,
+            phone: `+234${Math.floor(Math.random()*900000000+100000000)}`,
+            altPhone: Math.random()>0.4?`+234${Math.floor(Math.random()*900000000+100000000)}`:null,
+            homeAddress: `${Math.floor(Math.random()*99+1)} ${['Bode Thomas St','Allen Ave','Broad St','Adeola Odeku St','Isaac John St','Fola Osibo Rd','Wole Soyinka Crescent','Herbert Macaulay Way'][Math.floor(Math.random()*8)]}, ${areas[Math.floor(Math.random()*areas.length)]}`,
+            productType:productTypes[Math.floor(Math.random()*productTypes.length)],
+            brand:brands[Math.floor(Math.random()*brands.length)],
+            area:areas[Math.floor(Math.random()*areas.length)],
+            status,
+            fieldOfficer:fieldOfficers[Math.floor(Math.random()*fieldOfficers.length)],
+            recoveryOfficer:hasRO?recoveryOfficers[Math.floor(Math.random()*recoveryOfficers.length)]:null,
+            backOfficeUser:mapping.bo,
+            createdAt:new Date(Date.now()-Math.random()*30*24*60*60*1000).toISOString(),
+            updatedAt:new Date(Date.now()-Math.random()*7*24*60*60*1000).toISOString(),
+            followUpDate:Math.random()>0.3?new Date(Date.now()+Math.random()*14*24*60*60*1000).toISOString():null,
+            bvn:{number:`${Math.floor(Math.random()*9000000000+1000000000)}${Math.floor(Math.random()*10)}`,status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)],name:customerName},
+            nin:{number:`${Math.floor(Math.random()*90000000000+10000000000)}`,status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)]},
+            customerPhoto:`https://api.dicebear.com/7.x/avataaars/svg?seed=${idx}`,
+            depositAccount:{accountNumber:`${Math.floor(Math.random()*9000000000+1000000000)}`,tier:[1,2,3][Math.floor(Math.random()*3)],balance:Math.floor(Math.random()*100000+5000),createdOn:new Date(Date.now()-Math.random()*60*24*60*60*1000).toISOString()},
+            loanDetails:status==='Disbursed'?{loanAccountId:`LN${String(1000000+idx).padStart(8,'0')}`,loanAmount:Math.floor(Math.random()*400000+100000),interestRate:(Math.random()*10+15).toFixed(1),numberOfInstalments:[6,12,18,24][Math.floor(Math.random()*4)],instalmentAmount:Math.floor(Math.random()*50000+10000),repaymentSchedule:['Weekly','Bi-weekly','Monthly'][Math.floor(Math.random()*3)],instafinUrl:`https://instafin.ng/loans/LN${String(1000000+idx).padStart(8,'0')}`}:null,
+            aidStatus:['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+            avdStatus:['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+            aidComment:'',avdComment:'',
+          });
+        }
+      });
+      // Fill remaining with unassigned BO (for unassigned cases panel)
+      const remaining = 67 - cases.length;
+      for (let j=0;j<remaining;j++,idx++) {
+        const status = applicationStatuses[Math.floor(Math.random()*applicationStatuses.length)];
+        const customerName = nigerianNames[Math.floor(Math.random()*nigerianNames.length)];
+        const hasRO = Math.random()>0.15;
+        cases.push({
+          id:String(10000001+idx),name:customerName,
+          phone:`+234${Math.floor(Math.random()*900000000+100000000)}`,
+          altPhone:Math.random()>0.4?`+234${Math.floor(Math.random()*900000000+100000000)}`:null,
+          homeAddress:`${Math.floor(Math.random()*99+1)} ${['Bode Thomas St','Allen Ave','Broad St','Adeola Odeku St'][Math.floor(Math.random()*4)]}, ${areas[Math.floor(Math.random()*areas.length)]}`,
+          productType:productTypes[Math.floor(Math.random()*productTypes.length)],
+          brand:brands[Math.floor(Math.random()*brands.length)],
+          area:areas[Math.floor(Math.random()*areas.length)],
+          status,
+          fieldOfficer:fieldOfficers[Math.floor(Math.random()*fieldOfficers.length)],
+          recoveryOfficer:hasRO?recoveryOfficers[Math.floor(Math.random()*recoveryOfficers.length)]:null,
+          backOfficeUser:null,
+          createdAt:new Date(Date.now()-Math.random()*30*24*60*60*1000).toISOString(),
+          updatedAt:new Date(Date.now()-Math.random()*7*24*60*60*1000).toISOString(),
+          followUpDate:Math.random()>0.3?new Date(Date.now()+Math.random()*14*24*60*60*1000).toISOString():null,
+          bvn:{number:`${Math.floor(Math.random()*9000000000+1000000000)}${Math.floor(Math.random()*10)}`,status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)],name:customerName},
+          nin:{number:`${Math.floor(Math.random()*90000000000+10000000000)}`,status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)]},
+          customerPhoto:`https://api.dicebear.com/7.x/avataaars/svg?seed=${idx}`,
+          depositAccount:{accountNumber:`${Math.floor(Math.random()*9000000000+1000000000)}`,tier:[1,2,3][Math.floor(Math.random()*3)],balance:Math.floor(Math.random()*100000+5000),createdOn:new Date(Date.now()-Math.random()*60*24*60*60*1000).toISOString()},
+          loanDetails:status==='Disbursed'?{loanAccountId:`LN${String(1000000+idx).padStart(8,'0')}`,loanAmount:Math.floor(Math.random()*400000+100000),interestRate:(Math.random()*10+15).toFixed(1),numberOfInstalments:[6,12,18,24][Math.floor(Math.random()*4)],instalmentAmount:Math.floor(Math.random()*50000+10000),repaymentSchedule:['Weekly','Bi-weekly','Monthly'][Math.floor(Math.random()*3)],instafinUrl:`https://instafin.ng/loans/LN${String(1000000+idx).padStart(8,'0')}`}:null,
+          aidStatus:['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+          avdStatus:['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+          aidComment:'',avdComment:'',
+        });
+      }
+      return cases;
+    };
+
+    const _OLD_generateMockApplications_REMOVED = () => {
+      return Array.from({ length: 0 }, (_, i) => {
+        const status = applicationStatuses[Math.floor(Math.random() * applicationStatuses.length)];
+        const customerName = nigerianNames[Math.floor(Math.random() * nigerianNames.length)];
+        const hasRO = Math.random() > 0.15;
+        const hasBO = Math.random() > 0.15;
+        return {
+          id: String(10000001 + i), name: customerName,
+          phone: `+234${Math.floor(Math.random()*900000000+100000000)}`,
+          altPhone: Math.random()>0.4 ? `+234${Math.floor(Math.random()*900000000+100000000)}` : null,
+          homeAddress: `${Math.floor(Math.random()*99+1)} ${['Bode Thomas St','Allen Ave','Broad St','Adeola Odeku St','Isaac John St','Fola Osibo Rd','Wole Soyinka Crescent','Herbert Macaulay Way'][Math.floor(Math.random()*8)]}, ${areas[Math.floor(Math.random()*areas.length)]}`,
+          // email removed per feedback
+          productType: productTypes[Math.floor(Math.random()*productTypes.length)],
+          brand: brands[Math.floor(Math.random()*brands.length)],
+          area: areas[Math.floor(Math.random()*areas.length)],
+          status,
+          fieldOfficer: fieldOfficers[Math.floor(Math.random()*fieldOfficers.length)],
+          recoveryOfficer: hasRO ? recoveryOfficers[Math.floor(Math.random()*recoveryOfficers.length)] : null,
+          backOfficeUser: hasBO ? backOfficeUsers[Math.floor(Math.random()*backOfficeUsers.length)] : null,
+          createdAt: new Date(Date.now()-Math.random()*30*24*60*60*1000).toISOString(),
+          updatedAt: new Date(Date.now()-Math.random()*7*24*60*60*1000).toISOString(),
+          followUpDate: Math.random()>0.3 ? new Date(Date.now()+Math.random()*14*24*60*60*1000).toISOString() : null,
+          bvn: { number:`${Math.floor(Math.random()*9000000000+1000000000)}${Math.floor(Math.random()*10)}`, status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)], name:customerName },
+          nin: { number:`${Math.floor(Math.random()*90000000000+10000000000)}`, status:['Verified','Pending','Failed'][Math.floor(Math.random()*3)] },
+          customerPhoto: `https://api.dicebear.com/7.x/avataaars/svg?seed=${i}`,
+          depositAccount: { accountNumber:`${Math.floor(Math.random()*9000000000+1000000000)}`, tier:[1,2,3][Math.floor(Math.random()*3)], balance:Math.floor(Math.random()*100000+5000), createdOn:new Date(Date.now()-Math.random()*60*24*60*60*1000).toISOString() },
+          loanDetails: status==='Disbursed' ? { loanAccountId:`LN${String(1000000+i).padStart(8,'0')}`, loanAmount:Math.floor(Math.random()*400000+100000), interestRate:(Math.random()*10+15).toFixed(1), numberOfInstalments:[6,12,18,24][Math.floor(Math.random()*4)], instalmentAmount:Math.floor(Math.random()*50000+10000), repaymentSchedule:['Weekly','Bi-weekly','Monthly'][Math.floor(Math.random()*3)], instafinUrl:`https://instafin.ng/loans/LN${String(1000000+i).padStart(8,'0')}` } : null,
+          aidStatus: ['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+          avdStatus: ['Upload Pending','In Review','Sent Back','Approved'][Math.floor(Math.random()*4)],
+          aidComment: '', avdComment: '',
+        };
+      });
+    }; // end dummy
+
+    const generateMockLeads = () => {
+      const names = ['Kunle Bakare','Ngozi Eze','Olumide Taiwo','Precious Okoro','Rasheed Bello','Sade Williams','Tunde Afolabi','Uche Chukwu','Yemi Ogundimu','Zainab Abdullahi'];
+      return Array.from({ length: 45 }, (_, i) => ({
+        id: String(20000001+i), name: names[Math.floor(Math.random()*names.length)],
+        phone: `+234${Math.floor(Math.random()*900000000+100000000)}`,
+        altPhone: Math.random()>0.5 ? `+234${Math.floor(Math.random()*900000000+100000000)}` : null,
+        homeAddress: `${Math.floor(Math.random()*99+1)} ${['Bode Thomas St','Allen Ave','Broad St','Adeola Odeku St','Isaac John St','Fola Osibo Rd','Wole Soyinka Crescent','Herbert Macaulay Way'][Math.floor(Math.random()*8)]}, ${areas[Math.floor(Math.random()*areas.length)]}`,
+        // email removed per feedback
+        productType: productTypes[Math.floor(Math.random()*productTypes.length)],
+        brand: brands[Math.floor(Math.random()*brands.length)],
+        area: areas[Math.floor(Math.random()*areas.length)],
+        status: leadStatuses[Math.floor(Math.random()*leadStatuses.length)],
+        fieldOfficer: fieldOfficers[Math.floor(Math.random()*fieldOfficers.length)],
+        source: ['Walk-in','Referral','Online','Campaign','Partner'][Math.floor(Math.random()*5)],
+        createdAt: new Date(Date.now()-Math.random()*45*24*60*60*1000).toISOString(),
+        updatedAt: new Date(Date.now()-Math.random()*10*24*60*60*1000).toISOString(),
+        followUpDate: Math.random()>0.3 ? new Date(Date.now()+Math.random()*14*24*60*60*1000).toISOString() : null,
+      }));
+    };
+
+    // AID document types
+    const aidDocumentTypes = [
+      { id:'nin_slip', name:'NIN Slip / ID Card' },
+      { id:'loan_application', name:'Loan Application Form' },
+      { id:'guarantor_form', name:'Guarantor Form' },
+      { id:'referee_form', name:'Referee Form' },
+      { id:'drivers_license', name:'Drivers License / Park Attestation' },
+      { id:'memorandum', name:'Memorandum of Acceptance' },
+      { id:'asset_transfer', name:'Asset Transfer Agreement' },
+      { id:'debit_auth', name:'Debit Authorization' },
+      { id:'other', name:'Other Supporting Docs' },
+    ];
+
+    // AVD document types
+    const avdDocumentTypes = [
+      { id:'address_verification', name:'Address Verification Form' },
+      { id:'utility_bill', name:'Utility Bill' },
+      { id:'geotagged_photo', name:'Geotagged Picture with Customer' },
+    ];
+
+    const creditDocumentTypes = [{ id:'credit_bureau', name:'Credit Bureau Docs' }];
+
+    const generateMockDocuments = (types, appId) => {
+      const imageHeavy = new Set(['geotagged_photo','utility_bill','address_verification','other']);
+      const pickExt = (docId) => {
+        if (imageHeavy.has(docId)) return Math.random()<0.85?'jpg':Math.random()<0.95?'pdf':'xlsx';
+        const r=Math.random(); if(r<0.72) return 'jpg'; if(r<0.95) return 'pdf'; return Math.random()>0.5?'xlsx':'csv';
+      };
+      const makeSvg = (label) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2332"/><stop offset="100%" stop-color="#1e2d3d"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect x="60" y="60" width="1080" height="680" rx="28" fill="#1e2d3d" stroke="#354e63" stroke-width="4"/><text x="100" y="150" fill="#e2e8f0" font-family="Arial" font-size="44" font-weight="700">${label}</text><text x="100" y="210" fill="#94a3b8" font-family="Arial" font-size="22">Mock document preview (prototype)</text><circle cx="1030" cy="540" r="140" fill="#0f766e" opacity="0.25"/></svg>`)}`;
+      return types.map(doc => {
+        const hasFiles = Math.random()>0.25;
+        const files = hasFiles ? Array.from({length:Math.random()>0.65?2:1},(_,i)=>{
+          const ext=pickExt(doc.id); const name=`${doc.name.replace(/\s/g,'_')}_${appId}_${i+1}.${ext}`;
+          const isImage=['jpg','jpeg','png','webp'].includes(ext);
+          return { id:`${doc.id}-${i+1}`, name, size:Math.floor(Math.random()*1800+300), url:isImage?makeSvg(doc.name):null };
+        }) : [];
+        return { ...doc, files };
+      });
+    };
+
+    const generateMockEvents = (entityId) => {
+      const events = [
+        { type:'Status changed to Application Review', icon:'circle-alert', color:'blue', comment:null },
+        { type:'OTP Verified', icon:'circle-check', color:'green', comment:null },
+        { type:'BVN Verified', icon:'circle-check', color:'green', comment:null },
+        { type:'Documents Uploaded', icon:'upload', color:'purple', comment:null },
+        { type:'Comment Added', icon:'message-square', color:'gray', comment:'Customer documents verified and approved.' },
+        { type:'Comment Added', icon:'message-square', color:'gray', comment:'Called customer, visit scheduled for tomorrow.' },
+        { type:'Application Created', icon:'plus', color:'green', comment:null },
+        { type:'Comment Added', icon:'message-square', color:'gray', comment:'Initial verification completed.' },
+      ];
+      return events.map((evt,i) => ({ id:`EVT-${entityId}-${i}`, ...evt, description:evt.type,
+        timestamp: new Date(Date.now()-(i+1)*Math.random()*2*24*60*60*1000).toISOString(),
+        actor: i%2===0 ? fieldOfficers[Math.floor(Math.random()*fieldOfficers.length)] : backOfficeUsers[Math.floor(Math.random()*backOfficeUsers.length)],
+      })).sort((a,b) => new Date(b.timestamp)-new Date(a.timestamp));
+    };
+
+    // ─── Shared Components ──────────────────────────────────────────────────
+    const StatusBadge = ({ status }) => {
+      const styles = {
+        'Application Review':'bg-amber-900/30 text-amber-300 border-amber-700/50',
+        'Credit Review':'bg-blue-900/30 text-blue-300 border-blue-700/50',
+        'Approved':'bg-emerald-900/30 text-emerald-300 border-emerald-700/50',
+        'Loan Ready':'bg-cyan-900/30 text-cyan-300 border-cyan-700/50',
+        'Disbursed':'bg-green-900/30 text-green-300 border-green-700/50',
+        'Rejected':'bg-red-900/30 text-red-300 border-red-700/50',
+        'In Progress':'bg-violet-900/30 text-violet-300 border-violet-700/50',
+        'Created':'bg-[#2d3f52]/30 text-slate-300 border-[#455e72]/50',
+        'Application':'bg-indigo-900/30 text-indigo-300 border-indigo-700/50',
+        'Not Interested':'bg-gray-700/30 text-gray-400 border-gray-600/50',
+      };
+      return <span className={`px-2.5 py-1 text-xs font-medium rounded-full border ${styles[status]||'bg-gray-700 text-gray-300'}`}>{status}</span>;
+    };
+
+    const DocStatusBadge = ({ status }) => {
+      const styles = {
+        'Upload Pending':'bg-[#2d3f52]/40 text-slate-300 border-[#455e72]/50',
+        'In Review':'bg-amber-900/30 text-amber-300 border-amber-700/50',
+        'Sent Back':'bg-red-900/30 text-red-300 border-red-700/50',
+        'Approved':'bg-emerald-900/30 text-emerald-300 border-emerald-700/50',
+      };
+      return <span className={`px-2 py-0.5 text-xs font-medium rounded border ${styles[status]||'bg-gray-700 text-gray-300'}`}>{status}</span>;
+    };
+
+    const KYCStatusBadge = ({ status }) => {
+      const styles = { 'Verified':'bg-emerald-900/30 text-emerald-300 border-emerald-700/50','Pending':'bg-amber-900/30 text-amber-300 border-amber-700/50','Failed':'bg-red-900/30 text-red-300 border-red-700/50' };
+      return <span className={`px-2 py-0.5 text-xs font-medium rounded border ${styles[status]}`}>{status}</span>;
+    };
+
+    const UserRoleBadge = ({ role }) => {
+      const colors = { ARO:'bg-amber-900/30 text-amber-300 border-amber-700/50', UW:'bg-blue-900/30 text-blue-300 border-blue-700/50', OM:'bg-violet-900/30 text-violet-300 border-violet-700/50', FM:'bg-cyan-900/30 text-cyan-300 border-cyan-700/50', ADMIN_OPS:'bg-emerald-900/30 text-emerald-300 border-emerald-700/50', ADMIN_HEAD:'bg-rose-900/30 text-rose-300 border-rose-700/50', EXTERNAL:'bg-[#2d3f52]/30 text-slate-300 border-[#455e72]/50' };
+      return <span className={`px-2.5 py-1 text-xs font-medium rounded-full border ${colors[role]||'bg-gray-700 text-gray-300'}`}>{ROLES[role]?.label||role}</span>;
+    };
+
+    const MultiSelectDropdown = ({ label, options, selected, onChange, placeholder }) => {
+      const [isOpen, setIsOpen] = useState(false);
+      const ref = useRef(null);
+      useEffect(() => { const h = (e) => { if(ref.current&&!ref.current.contains(e.target)) setIsOpen(false); }; document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h); }, []);
+      return (
+        <div className="relative" ref={ref}>
+          <button onClick={() => setIsOpen(!isOpen)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium min-w-[140px] ${selected.length>0?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-[#253040] text-slate-400 border border-[#354e63] hover:text-white'}`}>
+            <span className="truncate">{selected.length>0?`${label} (${selected.length})`:placeholder||label}</span>
+            <Icon name={isOpen?'chevron-up':'chevron-down'} size={14} />
+          </button>
+          {isOpen && (
+            <div className="absolute top-full left-0 mt-1 w-56 max-h-60 overflow-auto bg-[#253040] border border-[#354e63] rounded-lg shadow-xl z-50 scrollbar-thin">
+              {options.map(opt => (
+                <button key={opt} onClick={() => onChange(selected.includes(opt)?selected.filter(s=>s!==opt):[...selected,opt])} className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[#2d3f52] ${selected.includes(opt)?'text-emerald-400':'text-slate-300'}`}>
+                  <div className={`w-4 h-4 rounded border flex items-center justify-center ${selected.includes(opt)?'bg-emerald-500 border-emerald-500':'border-[#455e72]'}`}>{selected.includes(opt)&&<Icon name="check" size={12} />}</div>
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const DateFilter = ({ label, value, onChange }) => (
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-500">{label}:</span>
+        <input type="date" value={value||''} onChange={(e)=>onChange(e.target.value||null)} className="px-2 py-1.5 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white" />
+        {value && <button onClick={()=>onChange(null)} className="text-slate-500 hover:text-white"><Icon name="x" size={14} /></button>}
+      </div>
+    );
+
+    const SortDropdown = ({ sortConfig, setSortConfig, options }) => {
+      const [isOpen, setIsOpen] = useState(false);
+      const ref = useRef(null);
+      useEffect(()=>{ const h=(e)=>{if(ref.current&&!ref.current.contains(e.target))setIsOpen(false);}; document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h); },[]);
+      const current = options.find(o=>o.key===sortConfig.key);
+      return (
+        <div className="relative" ref={ref}>
+          <button onClick={()=>setIsOpen(!isOpen)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] hover:text-white text-sm font-medium">
+            <Icon name="arrow-up-down" size={14} /> {current?.label||'Sort'} <Icon name={sortConfig.direction==='asc'?'arrow-up':'arrow-down'} size={12} />
+          </button>
+          {isOpen && (
+            <div className="absolute top-full right-0 mt-1 w-52 bg-[#253040] border border-[#354e63] rounded-lg shadow-xl z-50">
+              {options.map(opt => (
+                <button key={opt.key} onClick={()=>{ setSortConfig(s=>({key:opt.key, direction:s.key===opt.key?(s.direction==='asc'?'desc':'asc'):'desc'})); setIsOpen(false); }} className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-[#2d3f52] ${sortConfig.key===opt.key?'text-emerald-400':'text-slate-300'}`}>
+                  {opt.label} {sortConfig.key===opt.key && <Icon name={sortConfig.direction==='asc'?'arrow-up':'arrow-down'} size={12} />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const DeleteConfirmModal = ({ isOpen, onClose, onConfirm, documentName, fileName }) => {
+      if(!isOpen) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
+          <div className="bg-[#1e2d3d] rounded-2xl border border-[#354e63] w-full max-w-md p-6" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center"><Icon name="trash-2" size={24} className="text-red-400" /></div>
+              <div><h3 className="text-lg font-semibold text-white">Delete Document</h3><p className="text-sm text-slate-400">This action cannot be undone</p></div>
+            </div>
+            <div className="p-4 rounded-xl bg-[#253040]/50 border border-[#354e63] mb-6">
+              <p className="text-sm text-slate-300">Are you sure you want to delete:</p>
+              <p className="text-sm text-white font-medium mt-2">{documentName}</p>
+              <p className="text-xs text-slate-500 mt-1">{fileName}</p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={onClose} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] text-sm">Cancel</button>
+              <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 text-sm">Delete</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Login Screen ────────────────────────────────────────────────────────
+    const LoginScreen = ({ onLogin }) => {
+      const [showDemo, setShowDemo] = useState(false);
+      return (
+        <div className="min-h-screen bg-[#1a2332] flex items-center justify-center p-4">
+          <div className="w-full max-w-md space-y-6">
+            <div className="text-center">
+              <div className="inline-flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                  <span className="text-slate-900 font-black text-xl">AF</span>
+                </div>
+                <div className="text-left">
+                  <h1 className="font-bold text-white text-xl">Asset Finance</h1>
+                  <p className="text-xs text-slate-500">LOS Dashboard</p>
+                </div>
+              </div>
+              <h2 className="text-2xl font-bold text-white">Welcome back</h2>
+              <p className="text-slate-400 text-sm mt-1">Sign in with your FairMoney Google account to continue</p>
+            </div>
+            <div className="bg-[#1e2d3d] rounded-2xl border border-[#2d3f52] p-6 shadow-2xl space-y-4">
+              <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63] text-center">
+                <Icon name="shield-check" size={32} className="text-blue-400 mx-auto mb-2" />
+                <p className="text-sm text-white font-medium">Google Workspace SSO</p>
+                <p className="text-xs text-slate-400 mt-1">Only @fairmoney.ng accounts are permitted</p>
+              </div>
+              <button className="w-full flex items-center justify-center gap-3 py-3 rounded-xl bg-white text-slate-900 font-semibold text-sm hover:bg-slate-100 transition-colors">
+                <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.8C34.7 33.9 30.1 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 4.1 29.6 2 24 2 11.8 2 2 11.8 2 24s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.2-2.7-.5-4z"/></svg>
+                Continue with Google
+              </button>
+              <p className="text-center text-xs text-slate-500">You will be redirected to Google to authenticate</p>
+            </div>
+
+            {/* Demo Switcher */}
+            <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] p-4">
+              <button onClick={()=>setShowDemo(!showDemo)} className="w-full flex items-center justify-between text-sm font-medium text-slate-300 hover:text-white">
+                <span className="flex items-center gap-2"><Icon name="test-tube" size={16} className="text-emerald-400" /> Demo: Login as a specific role</span>
+                <Icon name={showDemo?'chevron-up':'chevron-down'} size={16} />
+              </button>
+              {showDemo && (
+                <div className="mt-4 space-y-2">
+                  {DEMO_USERS.filter(u=>u.status==='Active').map(u => (
+                    <button key={u.id} onClick={()=>onLogin(u)} className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-[#253040] hover:bg-[#2d3f52]/70 border border-[#354e63] transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center text-slate-900 font-bold text-xs">{u.name.split(' ').map(n=>n[0]).join('').slice(0,2)}</div>
+                        <div className="text-left">
+                          <p className="text-sm font-medium text-white">{u.name}</p>
+                          <p className="text-xs text-slate-500">{u.email}</p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1 justify-end">{(u.roles||[u.role]).map(r=><UserRoleBadge key={r} role={r}/>)}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Sidebar ─────────────────────────────────────────────────────────────
+    const Sidebar = ({ activeTab, setActiveTab, setSelectedItem, currentUser, onLogout }) => {
+      const role = currentUser?.role;
+      const userRoles = currentUser?.roles || [role];
+
+      const allItems = [
+        { id:'applications', label:'Applications', icon:'file-text', roles:['ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+        { id:'my-applications', label:'My Applications', icon:'user-check', roles:['ARO','UW','OM','FM','ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+        { id:'unassigned', label:'Unassigned', icon:'alert-triangle', roles:['ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+        { id:'leads', label:'Leads', icon:'users', roles:['ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+        { id:'users', label:'Users', icon:'shield', roles:['ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+        { id:'auto-assignment', label:'Auto Assignment', icon:'git-branch', roles:['ADMIN_OPS','ADMIN_HEAD','EXTERNAL'] },
+      ];
+
+      const items = allItems.filter(item => !role || userRoles.some(r => item.roles.includes(r)));
+
+      return (
+        <aside className="fixed left-0 top-0 h-screen w-56 bg-[#1e2d3d] border-r border-[#2d3f52] flex flex-col z-50">
+          <div className="p-5 border-b border-[#2d3f52]">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center"><span className="text-slate-900 font-black text-lg">AF</span></div>
+              <div><h1 className="font-bold text-white text-lg">Asset Finance</h1><p className="text-xs text-slate-500">LOS Dashboard</p></div>
+            </div>
+          </div>
+          <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+            {items.map(item => (
+              <button key={item.id} onClick={() => { setActiveTab(item.id); setSelectedItem(null); }}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab===item.id?'bg-gradient-to-r from-emerald-500/20 to-cyan-500/10 text-emerald-400 border border-emerald-500/20':'text-slate-400 hover:text-white hover:bg-[#253040]/50'}`}>
+                <Icon name={item.icon} size={20} />{item.label}
+              </button>
+            ))}
+          </nav>
+          <div className="p-4 border-t border-[#2d3f52] space-y-2">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-[#253040]/50">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-semibold text-sm">{(currentUser?.name||'').split(' ').map(n=>n[0]).join('').slice(0,2)}</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{currentUser?.name}</p>
+                <div className="mt-0.5 flex flex-wrap gap-1">{(currentUser?.roles||[currentUser?.role]).map(r=><UserRoleBadge key={r} role={r}/>)}</div>
+              </div>
+            </div>
+            <button onClick={onLogout} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-500 hover:text-white hover:bg-[#253040] text-xs font-medium transition-all">
+              <Icon name="log-out" size={14} /> Sign Out
+            </button>
+          </div>
+        </aside>
+      );
+    };
+
+    const Header = ({ title, subtitle, actions }) => (
+      <header className="flex items-center justify-between mb-6">
+        <div><h2 className="text-2xl font-bold text-white">{title}</h2>{subtitle&&<p className="text-sm text-slate-400 mt-1">{subtitle}</p>}</div>
+        {actions&&<div className="flex items-center gap-3">{actions}</div>}
+      </header>
+    );
+
+    // ─── Status Summary ───────────────────────────────────────────────────────
+    const StatusSummary = ({ data, statuses, type, selectedStatus, onStatusSelect, hideZero }) => {
+      const counts = {};
+      statuses.forEach(s => counts[s] = data.filter(d=>d.status===s).length);
+      const visibleStatuses = hideZero ? statuses.filter(s => counts[s] > 0) : statuses;
+      const colors = {
+        'Application Review':'from-amber-500/20 to-amber-500/5 border-amber-500/30 text-amber-300',
+        'Credit Review':'from-blue-500/20 to-blue-500/5 border-blue-500/30 text-blue-300',
+        'Approved':'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30 text-emerald-300',
+        'Loan Ready':'from-cyan-500/20 to-cyan-500/5 border-cyan-500/30 text-cyan-300',
+        'Disbursed':'from-green-500/20 to-green-500/5 border-green-500/30 text-green-300',
+        'Rejected':'from-red-500/20 to-red-500/5 border-red-500/30 text-red-300',
+        'In Progress':'from-violet-500/20 to-violet-500/5 border-violet-500/30 text-violet-300',
+        'Created':'from-slate-600/20 to-slate-600/5 border-[#455e72]/30 text-slate-300',
+        'Application':'from-indigo-500/20 to-indigo-500/5 border-indigo-500/30 text-indigo-300',
+        'Not Interested':'from-gray-600/20 to-gray-600/5 border-gray-600/30 text-gray-300',
+      };
+      // Auto-select first status with count when hideZero is true and nothing selected
+      useEffect(() => {
+        if (hideZero && !selectedStatus && visibleStatuses.length > 0) {
+          onStatusSelect(visibleStatuses[0]);
+        }
+      }, [data.length, hideZero]);
+
+      if (visibleStatuses.length === 0) return (
+        <div className="mb-6 p-4 rounded-xl bg-[#253040]/20 border border-[#354e63]/50 text-center">
+          <p className="text-sm text-slate-500">No applications assigned to you yet.</p>
+        </div>
+      );
+      return (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+          {visibleStatuses.map(s => (
+            <button key={s} onClick={()=>onStatusSelect(selectedStatus===s?null:s)}
+              className={`p-3 rounded-xl border bg-gradient-to-b text-left transition-all ${colors[s]||'from-slate-700/20 to-slate-700/5 border-[#354e63]/30 text-slate-300'} ${selectedStatus===s?'ring-2 ring-offset-1 ring-offset-slate-950 ring-white/20 scale-[1.02]':'hover:scale-[1.01]'}`}>
+              <p className="text-2xl font-bold">{counts[s]}</p>
+              <p className="text-xs mt-1 opacity-80 leading-tight">{s}</p>
+            </button>
+          ))}
+        </div>
+      );
+    };
+
+    // ─── Unassigned Section ───────────────────────────────────────────────────
+    const UnassignedSection = ({ data, onRowClick, fullPage }) => {
+      const unassignedRO = data.filter(a => !a.recoveryOfficer);
+      const unassignedFO = data.filter(a => !a.fieldOfficer);
+      const unassignedBO = data.filter(a => !a.backOfficeUser && ['Application Review','Credit Review','Approved','Loan Ready','Disbursed'].includes(a.status));
+      const [activeGroup, setActiveGroup] = useState('No Recovery Officer');
+
+      const groups = [
+        { label:'No Recovery Officer', count:unassignedRO.length, items:unassignedRO, desc:'Cases without a Recovery Officer assigned' },
+        { label:'No Field Officer',    count:unassignedFO.length, items:unassignedFO, desc:'Cases without a Field Officer assigned' },
+        { label:'No Back Office User', count:unassignedBO.length, items:unassignedBO, desc:'Active cases without a Back Office user' },
+      ];
+      const total = new Set([...unassignedRO, ...unassignedFO, ...unassignedBO].map(a=>a.id)).size;
+
+      if (!fullPage) return null; // old inline usage removed
+
+      return (
+        <div className="space-y-4">
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-3">
+            {groups.map(g => (
+              <button key={g.label} onClick={()=>setActiveGroup(g.label)}
+                className={`p-4 rounded-xl border text-left transition-all ${activeGroup===g.label?'bg-amber-900/20 border-amber-600/40':'bg-[#253040]/30 border-[#354e63]/50 hover:border-amber-700/30'}`}>
+                <p className={`text-2xl font-bold ${g.count>0?'text-amber-300':'text-slate-500'}`}>{g.count}</p>
+                <p className="text-sm font-medium text-white mt-1">{g.label}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{g.desc}</p>
+              </button>
+            ))}
+          </div>
+          {/* Table for active group */}
+          {(() => {
+            const grp = groups.find(g => g.label === activeGroup);
+            if (!grp || grp.items.length === 0) return (
+              <div className="p-8 rounded-xl bg-[#253040]/20 border border-[#354e63]/40 text-center">
+                <Icon name="check-circle" size={32} className="text-emerald-400 mx-auto mb-2"/>
+                <p className="text-sm text-slate-400">No unassigned cases in this category</p>
+              </div>
+            );
+            return (
+              <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] overflow-hidden">
+                <div className="px-4 py-3 border-b border-[#2d3f52]">
+                  <p className="text-sm font-medium text-white">{grp.label} <span className="text-slate-500">({grp.count})</span></p>
+                </div>
+                <div className="overflow-x-auto scrollbar-thin">
+                  <table className="w-full">
+                    <thead><tr className="border-b border-[#2d3f52]">
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">User ID</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Name</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Phone</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Product</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Assignees</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Created</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-slate-800/50">
+                      {grp.items.map(app => (
+                        <tr key={app.id} onClick={()=>onRowClick(app)} className="hover:bg-[#253040]/30 cursor-pointer">
+                          <td className="px-4 py-3 text-sm font-mono text-emerald-400">{app.id}</td>
+                          <td className="px-4 py-3 text-sm text-white font-medium">{app.name}</td>
+                          <td className="px-4 py-3 text-sm text-slate-400">{app.phone}</td>
+                          <td className="px-4 py-3 text-sm"><p className="text-white">{app.productType}</p><p className="text-xs text-slate-500">{app.brand}</p></td>
+                          <td className="px-4 py-3"><StatusBadge status={app.status}/></td>
+                          <td className="px-4 py-3 text-sm">
+                            <div className="space-y-0.5">
+                              <p className="text-xs"><span className="text-slate-500">FO: </span><span className={app.fieldOfficer?'text-slate-300':'text-amber-400 italic'}>{app.fieldOfficer||'Unassigned'}</span></p>
+                              <p className="text-xs"><span className="text-slate-500">RO: </span><span className={app.recoveryOfficer?'text-slate-300':'text-amber-400 italic'}>{app.recoveryOfficer||'Unassigned'}</span></p>
+                              <p className="text-xs"><span className="text-slate-500">BO: </span><span className={app.backOfficeUser?'text-slate-300':'text-red-400 italic'}>{app.backOfficeUser||'Unassigned'}</span></p>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">{formatDate(app.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      );
+    };
+
+    // ─── Applications Table ───────────────────────────────────────────────────
+    const ApplicationsTable = ({ data, onRowClick, filters, setFilters, statusFilter, onStatusFilterChange, currentUser }) => {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [sortConfig, setSortConfig] = useState({ key:'createdAt', direction:'desc' });
+      const [currentPage, setCurrentPage] = useState(1);
+      const [showFilters, setShowFilters] = useState(false);
+      const [dateFilters, setDateFilters] = useState({ createdFrom:null, createdTo:null, updatedFrom:null, updatedTo:null });
+      const itemsPerPage = 10;
+      const sortOptions = [{ key:'createdAt', label:'Created Date' },{ key:'updatedAt', label:'Updated Date' },{ key:'status', label:'Status' },{ key:'followUpDate', label:'Follow-up Date' }];
+
+      const filteredData = data.filter(item => {
+        const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) || item.phone.includes(searchTerm) || item.id.includes(searchTerm);
+        const matchesFO = filters.fieldOfficers.length===0||filters.fieldOfficers.includes(item.fieldOfficer);
+        const matchesBO = filters.backOfficeUsers.length===0||filters.backOfficeUsers.includes(item.backOfficeUser);
+        const matchesStatus = !statusFilter||item.status===statusFilter;
+        const cd=new Date(item.createdAt), ud=new Date(item.updatedAt);
+        return matchesSearch&&matchesFO&&matchesBO&&matchesStatus
+          &&(!dateFilters.createdFrom||cd>=new Date(dateFilters.createdFrom))
+          &&(!dateFilters.createdTo||cd<=new Date(dateFilters.createdTo))
+          &&(!dateFilters.updatedFrom||ud>=new Date(dateFilters.updatedFrom))
+          &&(!dateFilters.updatedTo||ud<=new Date(dateFilters.updatedTo));
+      });
+
+      const sortedData = [...filteredData].sort((a,b) => {
+        if(['createdAt','updatedAt','followUpDate'].includes(sortConfig.key)) {
+          const av=a[sortConfig.key]?new Date(a[sortConfig.key]):new Date(0);
+          const bv=b[sortConfig.key]?new Date(b[sortConfig.key]):new Date(0);
+          return sortConfig.direction==='asc'?av-bv:bv-av;
+        }
+        return sortConfig.direction==='asc'?(a[sortConfig.key]||'').localeCompare(b[sortConfig.key]||''):(b[sortConfig.key]||'').localeCompare(a[sortConfig.key]||'');
+      });
+
+      const totalPages = Math.ceil(sortedData.length/itemsPerPage);
+      const paginatedData = sortedData.slice((currentPage-1)*itemsPerPage, currentPage*itemsPerPage);
+      const activeFilterCount = filters.fieldOfficers.length+filters.backOfficeUsers.length+Object.values(dateFilters).filter(Boolean).length;
+
+      return (
+        <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] overflow-hidden">
+          <div className="p-4 border-b border-[#2d3f52] space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="relative flex-1 max-w-md">
+                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={18} /></div>
+                <input type="text" placeholder="Search by phone, name, or ID..." value={searchTerm} onChange={e=>{setSearchTerm(e.target.value);setCurrentPage(1);}} className="w-full pl-10 pr-10 py-2.5 bg-[#253040] border border-[#354e63] rounded-xl text-sm text-white placeholder:text-slate-500" />
+                {searchTerm&&<button onClick={()=>setSearchTerm('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"><Icon name="x" size={16} /></button>}
+              </div>
+              <SortDropdown sortConfig={sortConfig} setSortConfig={setSortConfig} options={sortOptions} />
+              <button onClick={()=>setShowFilters(!showFilters)} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${showFilters||activeFilterCount>0?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-[#253040] text-slate-400 border border-[#354e63] hover:text-white'}`}><Icon name="filter" size={18} /> Filters {activeFilterCount>0&&`(${activeFilterCount})`}</button>
+            </div>
+            {showFilters&&(
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <MultiSelectDropdown label="Field Officer" options={fieldOfficers} selected={filters.fieldOfficers} onChange={val=>setFilters({...filters,fieldOfficers:val})} />
+                  <MultiSelectDropdown label="Back Office" options={backOfficeUsers} selected={filters.backOfficeUsers} onChange={val=>setFilters({...filters,backOfficeUsers:val})} />
+                </div>
+                <div className="flex items-center gap-4 flex-wrap">
+                  <DateFilter label="Created From" value={dateFilters.createdFrom} onChange={v=>setDateFilters({...dateFilters,createdFrom:v})} />
+                  <DateFilter label="Created To" value={dateFilters.createdTo} onChange={v=>setDateFilters({...dateFilters,createdTo:v})} />
+                  <DateFilter label="Updated From" value={dateFilters.updatedFrom} onChange={v=>setDateFilters({...dateFilters,updatedFrom:v})} />
+                  <DateFilter label="Updated To" value={dateFilters.updatedTo} onChange={v=>setDateFilters({...dateFilters,updatedTo:v})} />
+                  {(activeFilterCount>0||statusFilter)&&<button onClick={()=>{setFilters({fieldOfficers:[],backOfficeUsers:[]});setDateFilters({createdFrom:null,createdTo:null,updatedFrom:null,updatedTo:null});onStatusFilterChange(null);}} className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm text-red-400 hover:bg-red-500/10"><Icon name="x" size={14} /> Clear All</button>}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full">
+              <thead><tr className="border-b border-[#2d3f52]">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">User ID</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Phone</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Product</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Assignees</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Dates</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {paginatedData.map(item => (
+                  <tr key={item.id} onClick={()=>onRowClick(item)} className="hover:bg-[#253040]/30 cursor-pointer">
+                    <td className="px-4 py-4 text-sm"><span className="text-emerald-400 font-mono">{item.id}</span></td>
+                    <td className="px-4 py-4 text-sm text-white font-medium">{item.name}</td>
+                    <td className="px-4 py-4 text-sm text-slate-300 font-mono">{item.phone}</td>
+                    <td className="px-4 py-4 text-sm"><p className="text-white">{item.productType}</p><p className="text-xs text-slate-500">{item.brand}</p></td>
+                    <td className="px-4 py-4 text-sm"><StatusBadge status={item.status} /></td>
+                    <td className="px-4 py-4 text-sm">
+                      <div className="space-y-0.5">
+                        <p className="text-xs"><span className="text-slate-500">FO: </span><span className={item.fieldOfficer?'text-slate-300':'text-amber-400 italic'} >{item.fieldOfficer||'Unassigned'}</span></p>
+                        <p className="text-xs"><span className="text-slate-500">RO: </span><span className={item.recoveryOfficer?'text-slate-300':'text-amber-400 italic'} >{item.recoveryOfficer||'Unassigned'}</span></p>
+                        <p className="text-xs"><span className="text-slate-500">BO: </span><span className={item.backOfficeUser?'text-slate-300':'text-amber-400 italic'} >{item.backOfficeUser||'Unassigned'}</span></p>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm">
+                      <div className="space-y-0.5">
+                        <p className="text-xs text-slate-400">Created: <span className="text-slate-300">{formatDate(item.createdAt)}</span></p>
+                        <p className="text-xs text-slate-400">Updated: <span className="text-slate-300">{formatDate(item.updatedAt)}</span></p>
+                        <p className="text-xs text-slate-400">Follow-up: <span className={item.followUpDate?'text-cyan-400':'text-slate-600'}>{item.followUpDate?formatDate(item.followUpDate):'—'}</span></p>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-4 py-3 border-t border-[#2d3f52] flex items-center justify-between">
+            <p className="text-sm text-slate-500">Showing {(currentPage-1)*itemsPerPage+1}–{Math.min(currentPage*itemsPerPage, sortedData.length)} of {sortedData.length}</p>
+            <div className="flex items-center gap-2">
+              <button onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} disabled={currentPage===1} className="p-2 rounded-lg bg-[#253040] text-slate-400 disabled:opacity-50"><Icon name="chevron-left" size={18} /></button>
+              {Array.from({length:Math.min(5,totalPages)},(_,i)=>i+1).map(p=>(<button key={p} onClick={()=>setCurrentPage(p)} className={`w-9 h-9 rounded-lg text-sm font-medium ${currentPage===p?'bg-emerald-500/20 text-emerald-400':'bg-[#253040] text-slate-400'}`}>{p}</button>))}
+              <button onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} disabled={currentPage===totalPages} className="p-2 rounded-lg bg-[#253040] text-slate-400 disabled:opacity-50"><Icon name="chevron-right" size={18} /></button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Document Viewer with AID/AVD split ────────────────────────────────
+    const DocumentSection = ({ title, subsectionKey, documents, onUpload, onDelete, sectionStatus, sectionComment, onStatusChange, onCommentChange, canEdit, showStatusControls }) => {
+      const [viewMode, setViewMode] = useState('list');
+      const [deleteConfirm, setDeleteConfirm] = useState({ isOpen:false, docId:null, fileId:null, docName:'', fileName:'' });
+      const fileInputRef = useRef(null);
+      const [selectedDoc, setSelectedDoc] = useState(null);
+      const [pendingStatus, setPendingStatus] = useState(sectionStatus);
+      const [pendingComment, setPendingComment] = useState(sectionComment);
+
+      const renderPreview = (file) => {
+        const name=(file?.name||'').toLowerCase();
+        const isImage = ['png','jpg','jpeg','webp'].some(e=>name.endsWith('.'+e));
+        const isPdf = name.endsWith('.pdf');
+        const makeSvg = (label,kind) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0b1220"/><stop offset="100%" stop-color="#111827"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><rect x="70" y="70" width="1260" height="760" rx="28" fill="#0f172a" stroke="#334155" stroke-width="4"/><text x="120" y="170" fill="#e2e8f0" font-family="Arial" font-size="44" font-weight="700">${label}</text><text x="120" y="235" fill="#94a3b8" font-family="Arial" font-size="22">${kind}</text></svg>`)}`;
+        const previewUrl = file?.url||(isImage?makeSvg(file?.name||'Image','Mock image preview (prototype)'):null);
+        if (isImage) return <img alt={file.name} src={previewUrl} className="w-full h-auto object-contain rounded-lg border border-[#354e63] bg-[#1e2d3d]" />;
+        if (isPdf) return (
+          <div className="w-full h-44 rounded-lg border border-[#354e63] bg-[#1e2d3d] flex items-center justify-center">
+            <div className="text-center px-4"><div className="mx-auto w-12 h-12 rounded-xl bg-[#253040] border border-[#354e63] flex items-center justify-center text-slate-300"><Icon name="file-text" size={18} /></div><p className="mt-3 text-xs text-slate-300">{file?.name||'PDF'}</p><p className="mt-1 text-[11px] text-slate-600">PDF preview (prototype)</p></div>
+          </div>
+        );
+        return <div className="w-full h-36 rounded-lg border border-[#354e63] bg-[#1e2d3d] flex items-center justify-center"><div className="text-center px-4"><Icon name="file" size={24} className="text-slate-500 mx-auto" /><p className="mt-2 text-xs text-slate-400">{file?.name}</p></div></div>;
+      };
+
+      return (
+        <div className="rounded-xl border border-[#354e63] bg-[#253040]/20 overflow-hidden">
+          <input type="file" multiple ref={fileInputRef} onChange={e=>{if(e.target.files.length&&selectedDoc){Array.from(e.target.files).forEach(f=>{try{f.__url=URL.createObjectURL(f);}catch(err){}onUpload(selectedDoc,f);});setSelectedDoc(null);}e.target.value='';}} accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.csv" className="hidden"/>
+          <DeleteConfirmModal isOpen={deleteConfirm.isOpen} onClose={()=>setDeleteConfirm({isOpen:false,docId:null,fileId:null,docName:'',fileName:''})} onConfirm={()=>{onDelete(deleteConfirm.docId,deleteConfirm.fileId);setDeleteConfirm({isOpen:false,docId:null,fileId:null,docName:'',fileName:''})} } documentName={deleteConfirm.docName} fileName={deleteConfirm.fileName} />
+
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-[#354e63]/50">
+            <div className="flex items-center gap-3">
+              <h4 className="text-sm font-semibold text-white">{title}</h4>
+              {showStatusControls && <DocStatusBadge status={sectionStatus} />}
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 bg-[#253040] rounded-lg p-1">
+                <button onClick={()=>setViewMode('list')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='list'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>List</button>
+                <button onClick={()=>setViewMode('preview')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='preview'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>Preview</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Status & Comment Controls (ARO view) */}
+          {showStatusControls && (
+            <div className="p-4 border-b border-[#354e63]/50 bg-[#253040]/30 space-y-3">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1.5">Review Status</label>
+                  <select value={pendingStatus} onChange={e=>setPendingStatus(e.target.value)} disabled={!canEdit} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white disabled:opacity-60">
+                    {['Upload Pending','In Review','Sent Back','Approved'].map(s=><option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1.5">Comment {pendingStatus==='Sent Back'&&<span className="text-red-400">*</span>}</label>
+                  <input type="text" value={pendingComment} onChange={e=>setPendingComment(e.target.value)} disabled={!canEdit} placeholder={canEdit?"Add comment...":"View only"} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white placeholder:text-slate-500 disabled:opacity-60" />
+                </div>
+              </div>
+              {canEdit&&<div className="flex justify-end">
+                <button onClick={()=>{onStatusChange(pendingStatus);onCommentChange(pendingComment);}} disabled={pendingStatus===sectionStatus&&pendingComment===sectionComment} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500 text-white text-xs font-medium disabled:opacity-50"><Icon name="check" size={13}/>Update Status</button>
+              </div>}
+            </div>
+          )}
+
+          {/* Document List */}
+          <div className="p-4 space-y-3">
+            {documents.map(doc => (
+              <div key={doc.id} className={`rounded-xl border ${doc.files?.length>0?'bg-[#253040]/30 border-[#354e63]':'bg-[#253040]/10 border-[#354e63]/50'}`}>
+                <div className="flex items-center justify-between p-3">
+                  <div className="flex items-center gap-3">
+                    {doc.files?.length>0 ? <Icon name="circle-check" size={18} className="text-emerald-400" /> : <div className="w-5 h-5 rounded-full border-2 border-[#455e72]" />}
+                    <span className="text-sm font-medium text-white">{doc.name}</span>
+                    {doc.files?.length>0&&<span className="text-xs text-slate-500">({doc.files.length})</span>}
+                  </div>
+                  {canEdit && (
+                    <button onClick={()=>{setSelectedDoc(doc.id);fileInputRef.current?.click();}} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2d3f52]/50 text-slate-400 hover:text-white text-sm">
+                      <Icon name="upload" size={14} /> Upload
+                    </button>
+                  )}
+                </div>
+                {doc.files?.length>0 && viewMode==='list' && (
+                  <div className="border-t border-[#354e63]/50 px-3 pb-3">
+                    {doc.files.map(file=>(
+                      <div key={file.id} className="flex items-center justify-between py-2 pl-8 border-b border-[#354e63]/30 last:border-0">
+                        <div className="flex items-center gap-2"><Icon name="file" size={14} className="text-slate-500"/><span className="text-sm text-slate-300">{file.name}</span></div>
+                        <div className="flex items-center gap-2">
+                          <button className="flex items-center gap-1 px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10"><Icon name="download" size={14}/> Download</button>
+                          {canEdit&&<button onClick={()=>setDeleteConfirm({isOpen:true,docId:doc.id,fileId:file.id,docName:doc.name,fileName:file.name})} className="flex items-center gap-1 px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10"><Icon name="trash-2" size={14}/> Delete</button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {doc.files?.length>0 && viewMode==='preview' && (
+                  <div className="border-t border-[#354e63]/50 px-3 pb-4 pt-4">
+                    <div className="space-y-4 pl-8">
+                      {doc.files.map(file=>(
+                        <div key={file.id} className="space-y-2">
+                          {renderPreview(file)}
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-slate-400 truncate pr-3">{file.name}</p>
+                            <div className="flex gap-2">
+                              <button className="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10">Download</button>
+                              {canEdit&&<button onClick={()=>setDeleteConfirm({isOpen:true,docId:doc.id,fileId:file.id,docName:doc.name,fileName:file.name})} className="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10">Delete</button>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Credit Doc Section (unified bureau + ops-uploaded docs) ─────────────
+    // NOTE: Defined outside CreditReviewPanel to avoid remount-on-render bug.
+    const CreditDocSection = ({ applicationId, entityLabel, bureauCsvFile, bureauCsvBvn, pullDocs, opsDocuments, onUpload, onDelete, canEdit, isBeforeCreditReview }) => {
+      const [viewMode, setViewMode] = useState('list');
+      const [deleteConfirm, setDeleteConfirm] = useState({ isOpen:false, fileId:null, fileName:'' });
+      const fileInputRef = useRef(null);
+
+      const handleCsvDownload = () => {
+        const csv = `bureau,bvn,score,total_loans,active_loans,overdue_loans,outstanding_balance,worst_status\nCRC,${bureauCsvBvn||'00000000000'},720,5,2,0,450000,Current\nFirstCentral,${bureauCsvBvn||'00000000000'},685,3,1,0,120000,Current\nCreditRegistry,${bureauCsvBvn||'00000000000'},701,4,2,0,280000,Current\n`;
+        const blob = new Blob([csv],{type:'text/csv'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href=url; a.download=bureauCsvFile||`Bureau_Data_${entityLabel}_${applicationId}.csv`; a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const renderPreview = (file) => {
+        const name=(file?.name||'').toLowerCase();
+        const isImg=['png','jpg','jpeg','webp'].some(e=>name.endsWith('.'+e));
+        const isPdf=name.endsWith('.pdf');
+        const isCsv=name.endsWith('.csv');
+        const makeSvg=(label)=>`data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="600"><rect width="100%" height="100%" fill="#0f172a"/><rect x="60" y="60" width="1280" height="480" rx="20" fill="#1e293b" stroke="#334155" stroke-width="3"/><text x="100" y="160" fill="#e2e8f0" font-family="Arial" font-size="40" font-weight="700">${label}</text><text x="100" y="220" fill="#94a3b8" font-family="Arial" font-size="20">Mock preview (prototype)</text></svg>`)}`;
+        if(isImg) return <img alt={file.name} src={file?.url||makeSvg(file?.name||'Image')} className="w-full h-auto object-contain rounded-lg border border-[#354e63] bg-[#1e2d3d]"/>;
+        const iconName=isPdf?'file-text':isCsv?'file-text':'file';
+        const iconColor=isCsv?'text-blue-400':'text-slate-400';
+        const bg=isCsv?'border-blue-700/30 bg-blue-900/10':'border-[#354e63] bg-[#1e2d3d]';
+        return <div className={`w-full h-36 rounded-lg border ${bg} flex items-center justify-center`}><div className="text-center"><Icon name={iconName} size={24} className={`${iconColor} mx-auto`}/><p className="mt-2 text-xs text-slate-300">{file?.name}</p><p className="mt-1 text-xs text-slate-600">{isCsv?'Bureau Data CSV':'PDF preview (prototype)'}</p></div></div>;
+      };
+
+      const FileRow = ({ file, onDownload, showDelete }) => (
+        viewMode==='list'
+          ? <div className="flex items-center justify-between px-3 py-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <Icon name="file" size={14} className="text-slate-500 flex-shrink-0"/>
+                <span className="text-sm text-slate-200 truncate">{file.name}</span>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                <button onClick={onDownload} className="flex items-center gap-1 px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10"><Icon name="download" size={13}/>Download</button>
+                {showDelete && <button onClick={()=>setDeleteConfirm({isOpen:true,fileId:file.id,fileName:file.name})} className="flex items-center gap-1 px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10"><Icon name="trash-2" size={13}/>Delete</button>}
+              </div>
+            </div>
+          : <div className="p-3 space-y-2">
+              {renderPreview(file)}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400 truncate pr-2">{file.name}</span>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button onClick={onDownload} className="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10">Download</button>
+                  {showDelete && <button onClick={()=>setDeleteConfirm({isOpen:true,fileId:file.id,fileName:file.name})} className="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10">Delete</button>}
+                </div>
+              </div>
+            </div>
+      );
+
+      const hasBureauData = !isBeforeCreditReview && (bureauCsvFile || pullDocs.length > 0);
+
+      return (
+        <div className="rounded-xl border border-[#354e63] bg-[#253040]/20 overflow-hidden">
+          <input type="file" multiple ref={fileInputRef} onChange={e=>{if(e.target.files.length){Array.from(e.target.files).forEach(f=>{try{f.__url=URL.createObjectURL(f);}catch(err){}onUpload(f);});} e.target.value='';}} accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.csv" className="hidden"/>
+          <DeleteConfirmModal isOpen={deleteConfirm.isOpen} onClose={()=>setDeleteConfirm({isOpen:false,fileId:null,fileName:''})} onConfirm={()=>{onDelete(deleteConfirm.fileId);setDeleteConfirm({isOpen:false,fileId:null,fileName:''});}} documentName={`${entityLabel} Credit Docs`} fileName={deleteConfirm.fileName}/>
+
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-[#354e63]/50">
+            <h4 className="text-sm font-semibold text-white">{entityLabel} — Documents</h4>
+            <div className="flex items-center gap-1 bg-[#253040] rounded-lg p-1">
+              <button onClick={()=>setViewMode('list')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='list'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>List</button>
+              <button onClick={()=>setViewMode('preview')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='preview'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>Preview</button>
+            </div>
+          </div>
+
+          {isBeforeCreditReview && (
+            <div className="flex items-center gap-2 p-6 justify-center">
+              <Icon name="lock" size={14} className="text-slate-600"/>
+              <p className="text-xs text-slate-500">Documents available from Credit Review status onwards.</p>
+            </div>
+          )}
+
+          {!isBeforeCreditReview && (
+            <div className="divide-y divide-slate-700/50">
+
+              {/* Sub-section 1: Bureau Data */}
+              <div className="p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide">Bureau Data</span>
+                  <span className="text-xs text-slate-600">download only</span>
+                </div>
+                {!hasBureauData && <p className="text-xs text-slate-500">No bureau data yet. Trigger a pull above.</p>}
+                {hasBureauData && (
+                  <div className="space-y-1.5">
+                    {pullDocs.slice(-1).map(file=>(
+                      <div key={file.id} className="rounded-lg border bg-blue-900/10 border-blue-700/30 overflow-hidden">
+                        <FileRow file={file} onDownload={()=>{}} showDelete={false}/>
+                      </div>
+                    ))}
+                    {bureauCsvFile && (
+                      <div className="rounded-lg border bg-blue-900/10 border-blue-700/30 overflow-hidden">
+                        <FileRow file={{id:'bureau-csv', name: bureauCsvFile}} onDownload={handleCsvDownload} showDelete={false}/>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Sub-section 2: Uploaded Documents */}
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Uploaded Documents</span>
+                    <span className="text-xs text-slate-600">ARO, UW, OM, FM, Admin Head</span>
+                  </div>
+                  {canEdit && (
+                    <button onClick={()=>fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2d3f52]/50 text-slate-400 hover:text-white text-xs border border-[#354e63]">
+                      <Icon name="upload" size={13}/>Upload
+                    </button>
+                  )}
+                </div>
+                {opsDocuments.length === 0 && <p className="text-xs text-slate-500">No documents uploaded yet.</p>}
+                {opsDocuments.length > 0 && (
+                  <div className="space-y-1.5">
+                    {opsDocuments.map(file=>(
+                      <div key={file.id} className="rounded-lg border bg-[#253040]/30 border-[#354e63]/60 overflow-hidden">
+                        <FileRow file={file} onDownload={()=>{}} showDelete={canEdit}/>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+        </div>
+      );
+    };
+
+        // ─── Credit Review Panel ─────────────────────────────────────────────────
+    const CreditReviewPanel = ({ applicationId, customerBvn, customerPullDocs, customerOpsDocs, onCustomerUpload, onCustomerDelete, customerPullStatus, onTriggerCustomerPull, customerBureauCsv, guarantorOpsDocs, onGuarantorUpload, onGuarantorDelete, guarantorPullDocs, guarantorBvn, setGuarantorBvn, guarantorPullStatus, onTriggerGuarantorPull, guarantorBureauCsv, applicationStatus, isReadOnly, canEditDocs }) => {
+      const [subTab, setSubTab] = useState('customer');
+
+      const statusOrder = ['Created','In Progress','Application Review','Credit Review','Approved','Loan Ready','Disbursed','Rejected'];
+      const statusIdx = statusOrder.indexOf(applicationStatus);
+      const isBeforeCreditReview = statusIdx < 3;
+      const isCreditReview = statusIdx === 3;
+      const isAfterCreditReview = statusIdx >= 4;
+      const canTriggerPull = isCreditReview && canEditDocs;
+
+      const pullChipCls = (ps) => {
+        if(ps==='loading') return { text:'Pulling bureau data…', cls:'bg-blue-500/15 text-blue-300 border-blue-500/25' };
+        if(ps==='done') return { text:'Last pull: just now', cls:'bg-emerald-500/15 text-emerald-300 border-emerald-500/25' };
+        if(ps==='error') return { text:'Enter a valid 11-digit BVN', cls:'bg-red-500/15 text-red-300 border-red-500/25' };
+        return { text:'No pull yet', cls:'bg-slate-500/15 text-slate-300 border-slate-500/25' };
+      };
+
+      // Render bureau pull card — plain JSX, NOT a nested component, to avoid focus/remount bug
+      const renderBureauPull = (isCustomer, bvnValue, pullStatus, onTrigger) => {
+        const chip = pullChipCls(pullStatus);
+        if(isBeforeCreditReview) return (
+          <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]/50 opacity-50">
+            <div className="flex items-center gap-2 mb-3"><Icon name="lock" size={13} className="text-slate-500"/><p className="text-xs text-slate-500">Bureau pull available from Credit Review status onwards.</p></div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-end">
+              <div className="lg:col-span-2">
+                <label className="text-xs text-slate-500 block mb-1">{isCustomer?'Customer BVN':'Guarantor BVN'}</label>
+                <div className="w-full bg-[#1e2d3d]/40 border border-[#354e63]/50 rounded-xl px-3 py-2 text-sm text-slate-500">—</div>
+              </div>
+              <button disabled className="w-full lg:w-auto px-4 py-2 rounded-xl text-sm font-medium border bg-[#253040] text-slate-600 border-[#354e63] cursor-not-allowed"><Icon name="zap" size={14} className="inline mr-2"/>Trigger Bureau Pull</button>
+            </div>
+          </div>
+        );
+        if(isAfterCreditReview) return (
+          <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]/50">
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-2">
+              <div><label className="text-xs text-slate-500 block mb-1">{isCustomer?'Customer BVN':'Guarantor BVN'}</label><p className="text-sm text-white font-mono">{bvnValue||'—'}</p></div>
+              <div><label className="text-xs text-slate-500 block mb-1">Pull Status</label><span className={`inline-block px-2.5 py-1 rounded-full text-xs border ${chip.cls}`}>{chip.text}</span></div>
+            </div>
+            <p className="text-xs text-slate-500">Bureau pull locked — application is past Credit Review.</p>
+          </div>
+        );
+        // Credit Review — fully interactive
+        return (
+          <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63] space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Bureau Pull</p>
+              <span className={`px-2.5 py-1 rounded-full text-xs border ${chip.cls}`}>{chip.text}</span>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-end">
+              <div className="lg:col-span-2">
+                <label className="text-xs text-slate-500 block mb-1">{isCustomer?'Customer BVN (pre-filled, non-editable)':'Guarantor BVN'}</label>
+                {isCustomer
+                  ? <div className="w-full bg-[#1e2d3d]/60 border border-[#354e63] rounded-xl px-3 py-2 text-sm text-white font-mono">{bvnValue||'—'}</div>
+                  : <input type="text" value={bvnValue||''} onChange={e=>dispatch({type:'PATCH_APP_STORE',id:appId,patch:{guarantorBvn:e.target.value.replace(/\D/g,'').slice(0,11)}})} placeholder="Enter 11-digit BVN" className="w-full bg-[#1e2d3d]/60 border border-[#354e63] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/30"/>
+                }
+              </div>
+              <button onClick={onTrigger} disabled={pullStatus==='loading'||!canTriggerPull} className={`w-full lg:w-auto px-4 py-2 rounded-xl text-sm font-medium border ${(pullStatus==='loading'||!canTriggerPull)?'bg-[#253040] text-slate-500 border-[#354e63] cursor-not-allowed':'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'}`}>
+                <Icon name="zap" size={14} className="inline mr-2"/>{pullStatus==='loading'?'Pulling…':'Trigger Bureau Pull'}
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">Pulls CRC / FirstCentral / CreditRegistry for the {isCustomer?'customer':'guarantor'}.</p>
+          </div>
+        );
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-white">Credit Review</h3>
+            {isBeforeCreditReview && <span className="px-3 py-1 rounded-full text-xs border bg-amber-500/15 text-amber-300 border-amber-500/25">Available from Credit Review status</span>}
+          </div>
+          <div className="flex gap-2">
+            {['customer','guarantor'].map(t=><button key={t} onClick={()=>setSubTab(t)} className={`px-4 py-2 rounded-lg text-sm font-medium ${subTab===t?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-[#253040] text-slate-400 border border-[#354e63] hover:text-white'}`}>{t.charAt(0).toUpperCase()+t.slice(1)}</button>)}
+          </div>
+          {subTab==='customer'&&(
+            <div className="space-y-4">
+              {renderBureauPull(true, customerBvn, customerPullStatus, onTriggerCustomerPull)}
+              <CreditDocSection applicationId={applicationId} entityLabel="Customer" subsectionKey="credit" bureauCsvFile={customerBureauCsv} bureauCsvBvn={customerBvn} pullDocs={customerPullDocs} opsDocuments={customerOpsDocs} onUpload={onCustomerUpload} onDelete={onCustomerDelete} canEdit={canEditDocs} isBeforeCreditReview={isBeforeCreditReview}/>
+            </div>
+          )}
+          {subTab==='guarantor'&&(
+            <div className="space-y-4">
+              {renderBureauPull(false, guarantorBvn, guarantorPullStatus, onTriggerGuarantorPull)}
+              <CreditDocSection applicationId={applicationId} entityLabel="Guarantor" subsectionKey="guarantor" bureauCsvFile={guarantorBureauCsv} bureauCsvBvn={guarantorBvn} pullDocs={guarantorPullDocs} opsDocuments={guarantorOpsDocs} onUpload={onGuarantorUpload} onDelete={onGuarantorDelete} canEdit={canEditDocs} isBeforeCreditReview={isBeforeCreditReview}/>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ─── Event Timeline ──────────────────────────────────────────────────────
+    const EventTimeline = ({ events }) => {
+      const colors = { blue:'bg-blue-500/20 text-blue-400', green:'bg-emerald-500/20 text-emerald-400', purple:'bg-violet-500/20 text-violet-400', gray:'bg-[#2d3f52]/50 text-slate-400' };
+      return (
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold text-white">Activity History</h3>
+          {events.map(evt=>(
+            <div key={evt.id} className="flex items-start gap-3">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${colors[evt.color]||colors.gray}`}><Icon name={evt.icon||'circle'} size={14} /></div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div><p className="text-sm text-white">{evt.description}</p>{evt.comment&&<p className="text-sm text-slate-400 mt-1 italic">"{evt.comment}"</p>}</div>
+                  <span className="text-xs text-slate-500 whitespace-nowrap">{formatDateTime(evt.timestamp)}</span>
+                </div>
+                <p className="text-xs text-slate-600 mt-1">by {evt.actor}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    // ─── Contract Section ────────────────────────────────────────────────────
+    const ContractSection = ({ contractFiles, onUpload, onDelete, canEdit }) => {
+      const [viewMode, setViewMode] = useState('list');
+      const [deleteConfirm, setDeleteConfirm] = useState({isOpen:false,fileId:null,fileName:''});
+      const fileInputRef = useRef(null);
+
+      const renderPreview = (file) => {
+        const name=(file?.name||'').toLowerCase();
+        const isImg=['png','jpg','jpeg','webp'].some(e=>name.endsWith('.'+e));
+        const isPdf=name.endsWith('.pdf');
+        const makeSvg=(label)=>`data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="600"><rect width="100%" height="100%" fill="#0f172a"/><rect x="60" y="60" width="1280" height="480" rx="20" fill="#1e293b" stroke="#334155" stroke-width="3"/><text x="100" y="160" fill="#e2e8f0" font-family="Arial" font-size="40" font-weight="700">${label}</text><text x="100" y="220" fill="#94a3b8" font-family="Arial" font-size="20">Contract preview (prototype)</text></svg>`)}`;
+        if(isImg) return <img alt={file.name} src={file.url||makeSvg(file.name)} className="w-full h-auto object-contain rounded-lg border border-[#354e63] bg-[#1e2d3d]"/>;
+        return <div className={`w-full h-36 rounded-lg border ${isPdf?'border-violet-700/30 bg-violet-900/10':'border-[#354e63] bg-[#1e2d3d]'} flex items-center justify-center`}><div className="text-center"><Icon name="file-text" size={24} className={isPdf?'text-violet-400':'text-slate-400'} /><p className="mt-2 text-xs text-slate-300">{file.name}</p><p className="mt-1 text-xs text-slate-600">Preview (prototype)</p></div></div>;
+      };
+
+      return (
+        <div className="rounded-xl border border-[#354e63] bg-[#253040]/20 overflow-hidden">
+          <input type="file" multiple ref={fileInputRef} onChange={e=>{if(e.target.files.length){Array.from(e.target.files).forEach((f,i)=>{try{f.__url=URL.createObjectURL(f);}catch(err){}onUpload({id:`contract-${Date.now()}-${i}`,name:f.name,size:f.size,url:f.__url||null});});}e.target.value='';}} accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden"/>
+          <DeleteConfirmModal isOpen={deleteConfirm.isOpen} onClose={()=>setDeleteConfirm({isOpen:false,fileId:null,fileName:''})} onConfirm={()=>{onDelete(deleteConfirm.fileId);setDeleteConfirm({isOpen:false,fileId:null,fileName:''}); }} documentName="Customer Contract" fileName={deleteConfirm.fileName}/>
+          <div className="flex items-center justify-between p-4 border-b border-[#354e63]/50">
+            <div className="flex items-center gap-3">
+              <Icon name="file-signature" size={16} className="text-violet-400"/>
+              <h4 className="text-sm font-semibold text-white">Customer Contract</h4>
+              <span className="text-xs text-slate-500">— 1 document</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {canEdit && (
+                <button onClick={()=>fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2d3f52]/50 text-slate-400 hover:text-white text-xs border border-[#354e63]">
+                  <Icon name="upload" size={13}/>Upload
+                </button>
+              )}
+              <div className="flex items-center gap-1 bg-[#253040] rounded-lg p-1">
+                <button onClick={()=>setViewMode('list')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='list'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>List</button>
+                <button onClick={()=>setViewMode('preview')} className={`px-3 py-1 rounded text-xs font-medium ${viewMode==='preview'?'bg-emerald-500/20 text-emerald-400':'text-slate-400'}`}>Preview</button>
+              </div>
+            </div>
+          </div>
+          <div className="p-4">
+            {(!contractFiles||contractFiles.length===0) && (
+              <div className="flex flex-col items-center justify-center py-8 gap-3">
+                <div className="w-12 h-12 rounded-xl bg-[#253040] border border-[#354e63] flex items-center justify-center"><Icon name="file-signature" size={20} className="text-slate-500"/></div>
+                <p className="text-sm text-slate-500">No contract documents uploaded yet.</p>
+                {canEdit&&<button onClick={()=>fileInputRef.current?.click()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-500/20 text-violet-400 border border-violet-500/30 text-sm font-medium hover:bg-violet-500/30"><Icon name="upload" size={14}/>Upload Contract</button>}
+              </div>
+            )}
+            {contractFiles&&contractFiles.length>0&&viewMode==='list'&&(
+              <div className="space-y-1.5">
+                {contractFiles.map(file=>(
+                  <div key={file.id} className="flex items-center justify-between px-3 py-2.5 rounded-lg border bg-violet-900/10 border-violet-700/30">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Icon name="file-text" size={14} className="text-violet-400 flex-shrink-0"/>
+                      <span className="text-sm text-slate-200 truncate">{file.name}</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 border border-violet-500/25 flex-shrink-0">Contract</span>
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                      <button className="flex items-center gap-1 px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10"><Icon name="download" size={13}/>Download</button>
+                      {canEdit&&<button onClick={()=>setDeleteConfirm({isOpen:true,fileId:file.id,fileName:file.name})} className="flex items-center gap-1 px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10"><Icon name="trash-2" size={13}/>Delete</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {contractFiles&&contractFiles.length>0&&viewMode==='preview'&&(
+              <div className="space-y-4">
+                {contractFiles.map(file=>(
+                  <div key={file.id} className="space-y-2">
+                    {renderPreview(file)}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-400 truncate pr-2">{file.name}</span>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button className="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10">Download</button>
+                        {canEdit&&<button onClick={()=>setDeleteConfirm({isOpen:true,fileId:file.id,fileName:file.name})} className="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10">Delete</button>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+        // ─── Application Detail ──────────────────────────────────────────────────
+    const ApplicationDetail = ({ application: initApp, onBack, currentUser }) => {
+      const { state, dispatch } = useStore();
+
+      // Always read the latest version of this application from the central store
+      const application = state.applications.find(a => a.id === initApp.id) || initApp;
+      const appId = application.id;
+
+      // ── Bootstrap per-app sub-state on first open ──────────────────────────
+      const statusOrder = ['Created','In Progress','Application Review','Credit Review','Approved','Loan Ready','Disbursed','Rejected'];
+      const initStatusIdx = statusOrder.indexOf(application.status);
+      const initAlreadyPulled = initStatusIdx >= 4;
+      const mockPullDoc = (prefix, id) => [{id:`${prefix}-mock`,name:`${prefix}_Credit_Bureau_${id}.pdf`,size:1400,url:null}];
+
+      useEffect(() => {
+        dispatch({
+          type: 'INIT_APP_STORE',
+          id: appId,
+          data: {
+            aidDocs: generateMockDocuments(aidDocumentTypes, appId),
+            avdDocs: generateMockDocuments(avdDocumentTypes, appId),
+            contractFiles: [],
+            events: generateMockEvents(appId),
+            customerPullDocs: initAlreadyPulled ? mockPullDoc('Customer', appId) : [],
+            customerOpsDocs: [],
+            customerPullStatus: initAlreadyPulled ? 'done' : 'idle',
+            customerBureauCsv: initAlreadyPulled ? `Bureau_Data_Customer_${appId}.csv` : null,
+            guarantorPullDocs: initAlreadyPulled ? mockPullDoc('Guarantor', appId) : [],
+            guarantorOpsDocs: [],
+            guarantorPullStatus: initAlreadyPulled ? 'done' : 'idle',
+            guarantorBureauCsv: initAlreadyPulled ? `Bureau_Data_Guarantor_${appId}.csv` : null,
+            guarantorBvn: initAlreadyPulled ? `${Math.floor(Math.random()*90000000000+10000000000)}` : '',
+            foUploadPermission: 'No',
+          }
+        });
+      }, [appId]);
+
+      // ── Read from store ────────────────────────────────────────────────────
+      const appStore = state.appStore[appId] || {};
+      const aidDocuments    = appStore.aidDocs || [];
+      const avdDocuments    = appStore.avdDocs || [];
+      const contractFiles   = appStore.contractFiles || [];
+      const events          = appStore.events || [];
+      const customerPullDocs    = appStore.customerPullDocs || [];
+      const customerOpsDocs     = appStore.customerOpsDocs || [];
+      const customerPullStatus  = appStore.customerPullStatus || 'idle';
+      const customerBureauCsv   = appStore.customerBureauCsv || null;
+      const guarantorPullDocs   = appStore.guarantorPullDocs || [];
+      const guarantorOpsDocs    = appStore.guarantorOpsDocs || [];
+      const guarantorPullStatus = appStore.guarantorPullStatus || 'idle';
+      const guarantorBureauCsv  = appStore.guarantorBureauCsv || null;
+      const guarantorBvn        = appStore.guarantorBvn || '';
+      const foUploadPermission  = appStore.foUploadPermission || 'No';
+      const aidStatus  = application.aidStatus  || 'Upload Pending';
+      const avdStatus  = application.avdStatus  || 'Upload Pending';
+      const aidComment = application.aidComment || '';
+      const avdComment = application.avdComment || '';
+
+      // ── Local UI-only state (not persisted across nav, that's fine) ────────
+      const [activeSection, setActiveSection] = useState('details');
+      const [isEditingDetails, setIsEditingDetails] = useState(false);
+      const [editForm, setEditForm] = useState({ ...application });
+      const [isEditingAssignees, setIsEditingAssignees] = useState(false);
+      const [assigneeForm, setAssigneeForm] = useState({ fieldOfficer: application.fieldOfficer, recoveryOfficer: application.recoveryOfficer, backOfficeUser: application.backOfficeUser });
+      const [newStatus, setNewStatus] = useState(application.status);
+      const [statusComment, setStatusComment] = useState('');
+      const [newComment, setNewComment] = useState('');
+      const [activityTab, setActivityTab] = useState('status');
+      const [docSubTab, setDocSubTab] = useState('aid');
+
+      const role = currentUser?.role;
+      const userRoles = currentUser?.roles || [role];
+
+      // Disbursed apps are fully locked for everyone
+      const isDisbursed = application.status === 'Disbursed';
+
+      // External is always view-only (can see everything but cannot write)
+      const isExternal = role === 'EXTERNAL';
+
+      // Admin Ops is view-only for docs and activity (can only edit assignees)
+      const isAdminOpsOnly = userRoles.includes('ADMIN_OPS') && !userRoles.includes('ADMIN_HEAD');
+
+      // Hard lock: External OR Disbursed blocks all writes
+      const isReadOnly = isExternal || isDisbursed;
+
+      // Case Details editable: all roles except External, not if Disbursed
+      const canEditDetails = !isReadOnly;
+
+      // Assignees editable: Admin Ops + Admin Head only, not if locked
+      const canEditAssignees = !isReadOnly && (userRoles.includes('ADMIN_OPS') || userRoles.includes('ADMIN_HEAD'));
+
+      // Doc upload/delete: NOT External, NOT Disbursed (Admin Ops CAN upload/delete docs now)
+      const canEditDocs = !isReadOnly;
+
+      // Doc status controls (AID/AVD dropdown): ARO + Admin Head, not if locked, not Admin Ops
+      const showStatusControls = canEditDocs && (userRoles.includes('ARO') || userRoles.includes('ADMIN_HEAD'));
+
+      // Activity tab visible: everyone sees it unless Disbursed
+      const showActivityTab = !isDisbursed;
+
+      // Activity tab: status changes = not Admin Ops; comments = Admin Ops allowed
+      const canUseActivity = !isReadOnly && !isAdminOpsOnly;
+      const canAddComments = !isReadOnly && !isExternal;
+
+      const sections = [
+        { id:'details', label:'Case Details' },
+        { id:'assignees', label:'Assignees' },
+        { id:'documents', label:'Documents' },
+        { id:'credit', label:'Credit Review' },
+        ...(showActivityTab ? [{ id:'activity', label:'Activity' }] : []),
+        { id:'accounts', label:'Accounts' },
+        { id:'history', label:'History' },
+      ];
+
+      // ── All handlers dispatch to the global store ─────────────────────────
+      const handleAidUpload = (docId, file) => dispatch({ type:'UPLOAD_DOC', appId, section:'aid', docId, file });
+      const handleAidDelete = (docId, fileId) => dispatch({ type:'DELETE_DOC', appId, section:'aid', docId, fileId });
+      const handleAvdUpload = (docId, file) => dispatch({ type:'UPLOAD_DOC', appId, section:'avd', docId, file });
+      const handleAvdDelete = (docId, fileId) => dispatch({ type:'DELETE_DOC', appId, section:'avd', docId, fileId });
+      const handleCreditUpload = (file) => dispatch({ type:'UPLOAD_CREDIT_OPS', appId, side:'customer', file });
+      const handleCreditDelete = (fileId) => dispatch({ type:'DELETE_CREDIT_OPS', appId, side:'customer', fileId });
+      const handleGuarantorUpload = (file) => dispatch({ type:'UPLOAD_CREDIT_OPS', appId, side:'guarantor', file });
+      const handleGuarantorDelete = (fileId) => dispatch({ type:'DELETE_CREDIT_OPS', appId, side:'guarantor', fileId });
+
+      const handleStatusUpdate = () => {
+        dispatch({ type:'UPDATE_APP', id:appId, patch:{ status:newStatus } });
+        dispatch({ type:'ADD_EVENT', appId, event:{id:`EVT-${Date.now()}`,icon:'circle-alert',color:'blue',description:`Status changed to ${newStatus}`,timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:statusComment||null} });
+
+        // ── Auto Assignment trigger ──────────────────────────────────────
+        const autoStages = ['Application Review','Credit Review','Approved','Loan Ready'];
+        if(autoStages.includes(newStatus)) {
+          const alreadyAssigned = (state.assignedApps[appId] || []).includes(newStatus);
+          if(!alreadyAssigned) {
+            const stageCfg = state.assignmentConfig[newStatus];
+            if(stageCfg) {
+              // Get eligible users with weight > 0
+              const eligible = state.users.filter(u => {
+                const uRoles = u.roles || [u.role];
+                return stageCfg.roles.some(r => uRoles.includes(r)) && (stageCfg.weights[u.id] || 0) > 0;
+              });
+              if(eligible.length > 0) {
+                // Count existing assignments in mock data for proportional distribution
+                // Key assignedCounts by user NAME (matches backOfficeUser field on applications)
+                const assignedCounts = {};
+                eligible.forEach(u => { assignedCounts[u.name] = 0; });
+                state.applications.forEach(app => {
+                  if(app.backOfficeUser && assignedCounts.hasOwnProperty(app.backOfficeUser)) {
+                    assignedCounts[app.backOfficeUser]++;
+                  }
+                });
+                // Pick user most under their weight target (weighted round robin)
+                let bestUser = null, bestScore = -Infinity;
+                const totalAssigned = Object.values(assignedCounts).reduce((a,b)=>a+b,0);
+                eligible.forEach(u => {
+                  const targetShare = (stageCfg.weights[u.id] || 0) / 100;
+                  const actualShare = totalAssigned > 0 ? (assignedCounts[u.name] || 0) / totalAssigned : 0;
+                  const score = targetShare - actualShare;
+                  if(score > bestScore) { bestScore = score; bestUser = u; }
+                });
+                if(bestUser) {
+                  dispatch({ type:'UPDATE_APP', id:appId, patch:{ backOfficeUser: bestUser.name } });
+                  dispatch({ type:'RECORD_ASSIGNMENT', appId, stageId: newStatus });
+                  dispatch({ type:'ADD_EVENT', appId, event:{
+                    id:`EVT-${Date.now()+1}`,
+                    icon:'user-check',
+                    color:'green',
+                    description:`Auto-assigned to ${bestUser.name}`,
+                    timestamp:new Date().toISOString(),
+                    actor:'System',
+                    comment:`Stage: ${newStatus}`
+                  }});
+                }
+              }
+            }
+          }
+        }
+
+        setStatusComment('');
+      };
+      const handleAddComment = () => {
+        if(!newComment.trim()) return;
+        dispatch({ type:'ADD_EVENT', appId, event:{id:`EVT-${Date.now()}`,icon:'message-square',color:'gray',description:'Comment Added',timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:newComment} });
+        setNewComment('');
+      };
+      const triggerCustomerPull = () => {
+        dispatch({ type:'PATCH_APP_STORE', id:appId, patch:{ customerPullStatus:'loading' } });
+        setTimeout(()=>{
+          dispatch({ type:'PATCH_APP_STORE', id:appId, patch:{
+            customerPullDocs: [{id:`cust-pull-${Date.now()}`,name:`Customer_Credit_Bureau_${appId}.pdf`,size:Math.floor(Math.random()*2000+600),url:null}],
+            customerBureauCsv: `Bureau_Data_Customer_${appId}.csv`,
+            customerPullStatus: 'done',
+          }});
+          dispatch({ type:'ADD_EVENT', appId, event:{id:`EVT-${Date.now()}`,icon:'file-search',color:'blue',description:'Customer credit bureau pulled',timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:`BVN: ${application.bvn?.number||''}`} });
+        },800);
+      };
+
+      const triggerGuarantorPull = () => {
+        if((guarantorBvn||'').length!==11){ dispatch({ type:'PATCH_APP_STORE', id:appId, patch:{ guarantorPullStatus:'error' } }); return; }
+        dispatch({ type:'PATCH_APP_STORE', id:appId, patch:{ guarantorPullStatus:'loading' } });
+        setTimeout(()=>{
+          dispatch({ type:'PATCH_APP_STORE', id:appId, patch:{
+            guarantorPullDocs: [{id:`guar-pull-${Date.now()}`,name:`Guarantor_Credit_Bureau_${appId}.pdf`,size:Math.floor(Math.random()*2000+600),url:null}],
+            guarantorBureauCsv: `Bureau_Data_Guarantor_${appId}.csv`,
+            guarantorPullStatus: 'done',
+          }});
+          dispatch({ type:'ADD_EVENT', appId, event:{id:`EVT-${Date.now()}`,icon:'file-search',color:'purple',description:'Guarantor credit bureau pulled',timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:`BVN: ${guarantorBvn}`} });
+        },800);
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <button onClick={onBack} className="p-3 rounded-xl bg-[#253040] text-white hover:bg-[#2d3f52] border border-[#354e63]"><span className="text-white text-lg leading-none">←</span></button>
+            <div>
+              <div className="flex items-center gap-3"><h2 className="text-xl font-bold text-white">{application.name}</h2><StatusBadge status={application.status} /></div>
+              <p className="text-sm text-slate-500 mt-0.5">ID: {application.id} · Created {formatDate(application.createdAt)}</p>
+            </div>
+          </div>
+
+          <div className="flex gap-1 border-b border-[#2d3f52] overflow-x-auto">
+            {sections.map(s=><button key={s.id} onClick={()=>setActiveSection(s.id)} className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap ${activeSection===s.id?'text-emerald-400 border-b-2 border-emerald-500 bg-[#253040]/30':'text-slate-400 hover:text-white'}`}>{s.label}</button>)}
+          </div>
+
+
+          <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] p-6">
+            {/* ── Case Details ── */}
+            {activeSection==='details'&&(
+              <div className="space-y-6">
+                <div className="flex items-center justify-between pb-4 border-b border-[#2d3f52]">
+                  <h3 className="text-lg font-semibold text-white">Case Details</h3>
+                  {canEditDetails&&<button onClick={()=>setIsEditingDetails(!isEditingDetails)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium ${isEditingDetails?'bg-amber-500/20 text-amber-400 border border-amber-500/30':'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}><Icon name={isEditingDetails?'x':'pencil'} size={16}/>{isEditingDetails?'Cancel':'Edit Details'}</button>}
+                  {isReadOnly&&<span className="text-xs text-slate-500 bg-[#253040] px-3 py-1.5 rounded-full border border-[#354e63]">{isDisbursed?"Disbursed — View Only":"View Only"}</span>}
+                </div>
+                <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+                  {[
+                    {label:'User ID', val:application.id, mono:true, green:true},
+                    {label:'Name', key:'name'},
+                    {label:'Primary Phone', val:application.phone},
+                    {label:'Alternate Phone', key:'altPhone'},
+                    {label:'Home Address', key:'homeAddress'},
+                    {label:'Area', key:'area', options:areas},
+                    {label:'Product', key:'productType', options:productTypes},
+                    {label:'Brand', key:'brand', options:brands},
+                    {label:'Updated At', val:formatDate(application.updatedAt), readOnly:true},
+                  ].map(field=>(
+                    <div key={field.label}>
+                      <label className="text-xs text-slate-500 block mb-1">{field.label}</label>
+                      {field.val ? <p className={`text-sm ${field.green?'text-emerald-400 font-mono':field.mono?'font-mono text-white':'text-white'}`}>{field.val}</p>
+                      : isEditingDetails && field.key && field.options ? <select value={editForm[field.key]||''} onChange={e=>setEditForm({...editForm,[field.key]:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{field.options.map(o=><option key={o} value={o}>{o}</option>)}</select>
+                      : isEditingDetails && field.key ? <input type={field.type||'text'} value={editForm[field.key]||''} onChange={e=>setEditForm({...editForm,[field.key]:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white" />
+                      : <p className="text-sm text-white">{application[field.key]||'—'}</p>}
+                    </div>
+                  ))}
+                  <div><label className="text-xs text-slate-500 block mb-1">Follow-up Date</label><p className="text-sm text-white">{formatDate(application.followUpDate)}</p></div>
+                </div>
+                {isEditingDetails&&<div className="flex justify-end gap-3 pt-4 border-t border-[#2d3f52]"><button onClick={()=>setIsEditingDetails(false)} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] text-sm">Cancel</button><button onClick={()=>{ dispatch({type:'UPDATE_APP',id:appId,patch:editForm}); dispatch({type:'ADD_EVENT',appId,event:{id:`EVT-${Date.now()}`,icon:'edit',color:'gray',description:'Case details updated',timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:null}}); setIsEditingDetails(false); }} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white text-sm font-medium">Save Changes</button></div>}
+
+                {/* KYC */}
+                <div className="pt-6 border-t border-[#2d3f52]">
+                  <h4 className="text-md font-semibold text-white mb-4 flex items-center gap-2"><Icon name="shield-check" size={18} className="text-cyan-400"/> KYC Details</h4>
+                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    <div className="lg:row-span-2">
+                      <label className="text-xs text-slate-500 block mb-2">Customer Photo (BVN)</label>
+                      <div className="w-32 h-40 rounded-xl border-2 border-[#354e63] overflow-hidden bg-[#253040]"><img src={application.customerPhoto} alt="Customer" className="w-full h-full object-cover" /></div>
+                    </div>
+                    <div className="lg:col-span-3 grid grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div className="p-4 rounded-xl bg-[#253040]/50 border border-[#354e63]">
+                        <h5 className="text-xs font-semibold text-blue-400 mb-2 flex items-center gap-1"><Icon name="credit-card" size={14}/> BVN</h5>
+                        <div className="space-y-2">
+                          <div><label className="text-xs text-slate-500">Number</label><p className="text-sm text-white font-mono">{application.bvn.number}</p></div>
+                          <div><label className="text-xs text-slate-500">Name</label><p className="text-sm text-white">{application.bvn.name}</p></div>
+                          <div><label className="text-xs text-slate-500">Status</label><div className="mt-1"><KYCStatusBadge status={application.bvn.status}/></div></div>
+                        </div>
+                      </div>
+                      <div className="p-4 rounded-xl bg-[#253040]/50 border border-[#354e63]">
+                        <h5 className="text-xs font-semibold text-purple-400 mb-2 flex items-center gap-1"><Icon name="id-card" size={14}/> NIN</h5>
+                        <div className="space-y-2">
+                          <div><label className="text-xs text-slate-500">Number</label><p className="text-sm text-white font-mono">{application.nin.number}</p></div>
+                          <div><label className="text-xs text-slate-500">Status</label><div className="mt-1"><KYCStatusBadge status={application.nin.status}/></div></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Assignees ── */}
+            {activeSection==='assignees'&&(
+              <div className="space-y-6">
+                <div className="flex items-center justify-between pb-4 border-b border-[#2d3f52]">
+                  <h3 className="text-lg font-semibold text-white">Assignees</h3>
+                  {canEditAssignees&&<button onClick={()=>setIsEditingAssignees(!isEditingAssignees)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium ${isEditingAssignees?'bg-amber-500/20 text-amber-400 border border-amber-500/30':'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}><Icon name={isEditingAssignees?'x':'pencil'} size={16}/>{isEditingAssignees?'Cancel':'Edit Assignees'}</button>}
+                  {!canEditAssignees&&<span className="text-xs text-slate-500 bg-[#253040] px-3 py-1.5 rounded-full border border-[#354e63]">{isDisbursed?"Disbursed — View Only":isExternal?"View Only":"Admin Ops/Head only"}</span>}
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {[
+                    {label:'Field Officer', key:'fieldOfficer', icon:'user', color:'text-emerald-400', options:fieldOfficers},
+                    {label:'Recovery Officer', key:'recoveryOfficer', icon:'map-pin', color:'text-cyan-400', options:recoveryOfficers},
+                    {label:'Back Office User', key:'backOfficeUser', icon:'building-2', color:'text-violet-400', options:backOfficeUsers},
+                  ].map(field=>(
+                    <div key={field.key} className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Icon name={field.icon} size={16} className={field.color}/>
+                        <label className="text-xs text-slate-500 font-medium">{field.label}</label>
+                      </div>
+                      {isEditingAssignees ? (
+                        <select value={assigneeForm[field.key]||''} onChange={e=>setAssigneeForm({...assigneeForm,[field.key]:e.target.value||null})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">
+                          <option value="">Unassigned</option>
+                          {field.options.map(o=><option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <p className={`text-sm font-medium ${application[field.key]?'text-white':'text-amber-400 italic'}`}>{application[field.key]||'Unassigned'}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {isEditingAssignees&&(
+                  <div className="flex justify-end gap-3 pt-4 border-t border-[#2d3f52]">
+                    <button onClick={()=>{setAssigneeForm({fieldOfficer:application.fieldOfficer,recoveryOfficer:application.recoveryOfficer,backOfficeUser:application.backOfficeUser});setIsEditingAssignees(false);}} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] text-sm">Cancel</button>
+                    <button onClick={()=>{ dispatch({type:'UPDATE_APP',id:appId,patch:assigneeForm}); dispatch({type:'ADD_EVENT',appId,event:{id:`EVT-${Date.now()}`,icon:'users',color:'green',description:'Assignees updated',timestamp:new Date().toISOString(),actor:currentUser?.name||'System',comment:null}}); setIsEditingAssignees(false); }} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white text-sm font-medium">Save Assignees</button>
+                  </div>
+                )}
+
+                {/* FO Address Doc Upload Permission */}
+                <div className="rounded-xl border border-[#354e63] bg-[#253040]/20 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon name="upload-cloud" size={16} className="text-amber-400"/>
+                    <h4 className="text-sm font-semibold text-white">Allow FOs to Upload Address Docs</h4>
+                    <span className="text-xs text-slate-500">— AVD subsection only</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <select value={foUploadPermission} onChange={e=>dispatch({type:'PATCH_APP_STORE',id:appId,patch:{foUploadPermission:e.target.value}})} disabled={!canEditAssignees} className="px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white disabled:opacity-60 w-32">
+                      <option value="No">No</option>
+                      <option value="Yes">Yes</option>
+                    </select>
+                    {canEditAssignees&&(
+                      <button className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-medium hover:bg-emerald-500/30">
+                        <Icon name="check" size={13}/>Update
+                      </button>
+                    )}
+                    <span className="text-xs text-slate-500">{foUploadPermission==='Yes'?'FOs on this application can upload address verification documents via the FOS app.':'FOs cannot upload address verification documents.'}</span>
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* ── Documents ── */}
+            {activeSection==='documents'&&(
+              <div className="space-y-6">
+                <h3 className="text-lg font-semibold text-white">Documents</h3>
+                {/* Document sub-tabs */}
+                <div className="flex gap-2 border-b border-[#354e63]/50 pb-0">
+                  {['aid','avd','contract'].map(t=>(
+                    <button key={t} onClick={()=>setDocSubTab(t)} className={`px-4 py-2 rounded-t-lg text-sm font-medium border-b-2 transition-colors ${docSubTab===t?'text-emerald-400 border-emerald-500':'text-slate-400 border-transparent hover:text-white'}`}>
+                      {t==='aid'?'App / Identity Docs (AID)':t==='avd'?'Address Verification Docs (AVD)':'Contract'}
+                    </button>
+                  ))}
+                </div>
+                {docSubTab==='aid'&&<DocumentSection
+                  title="App / Identity Docs (AID)"
+                  subsectionKey="aid"
+                  documents={aidDocuments}
+                  onUpload={handleAidUpload}
+                  onDelete={handleAidDelete}
+                  sectionStatus={aidStatus}
+                  sectionComment={aidComment}
+                  onStatusChange={st=>dispatch({type:'UPDATE_APP',id:appId,patch:{aidStatus:st}})}
+                  onCommentChange={cm=>dispatch({type:'UPDATE_APP',id:appId,patch:{aidComment:cm}})}
+                  canEdit={canEditDocs}
+                  showStatusControls={showStatusControls}
+                />}
+                {docSubTab==='avd'&&<DocumentSection
+                  title="Address Verification Docs (AVD)"
+                  subsectionKey="avd"
+                  documents={avdDocuments}
+                  onUpload={handleAvdUpload}
+                  onDelete={handleAvdDelete}
+                  sectionStatus={avdStatus}
+                  sectionComment={avdComment}
+                  onStatusChange={st=>dispatch({type:'UPDATE_APP',id:appId,patch:{avdStatus:st}})}
+                  onCommentChange={cm=>dispatch({type:'UPDATE_APP',id:appId,patch:{avdComment:cm}})}
+                  canEdit={canEditDocs}
+                  showStatusControls={showStatusControls}
+                />}
+                {docSubTab==='contract'&&<ContractSection contractFiles={contractFiles} onUpload={file=>dispatch({type:'UPLOAD_CONTRACT',appId,file})} onDelete={fileId=>dispatch({type:'DELETE_CONTRACT',appId,fileId})} canEdit={canEditDocs}/>}
+              </div>
+            )}
+
+            {/* ── Credit Review ── */}
+            {activeSection==='credit'&&<CreditReviewPanel applicationId={application.id} customerBvn={application.bvn?.number} customerPullDocs={customerPullDocs} customerOpsDocs={customerOpsDocs} onCustomerUpload={handleCreditUpload} onCustomerDelete={handleCreditDelete} customerPullStatus={customerPullStatus} onTriggerCustomerPull={triggerCustomerPull} customerBureauCsv={customerBureauCsv} guarantorPullDocs={guarantorPullDocs} guarantorOpsDocs={guarantorOpsDocs} onGuarantorUpload={handleGuarantorUpload} onGuarantorDelete={handleGuarantorDelete} guarantorBvn={guarantorBvn} setGuarantorBvn={bvn=>dispatch({type:'PATCH_APP_STORE',id:appId,patch:{guarantorBvn:bvn}})} guarantorPullStatus={guarantorPullStatus} onTriggerGuarantorPull={triggerGuarantorPull} guarantorBureauCsv={guarantorBureauCsv} applicationStatus={application.status} isReadOnly={isReadOnly} canEditDocs={!isReadOnly && !isAdminOpsOnly} />}
+
+            {/* ── Activity ── */}
+            {activeSection==='activity'&&showActivityTab&&(
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-white">Activity</h3>
+                  {!canUseActivity&&activityTab==='status'&&<span className="text-xs text-amber-600/80 bg-amber-900/20 px-3 py-1.5 rounded-full border border-amber-700/30 flex items-center gap-1.5"><Icon name="eye" size={12}/>View Only — no write access</span>}
+                </div>
+                <div className="flex gap-2">
+                  {['status','comments'].map(t=><button key={t} onClick={()=>setActivityTab(t)} className={`px-4 py-2 rounded-lg text-sm font-medium ${activityTab===t?'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30':'bg-[#253040] text-slate-400 border border-[#354e63] hover:text-white'}`}>{t==='status'?<><Icon name="refresh-cw" size={14} className="inline mr-2"/>Change Status</>:<><Icon name="message-square" size={14} className="inline mr-2"/>Add Comment</>}</button>)}
+                </div>
+                {activityTab==='status'&&(
+                  <div className="space-y-4 p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 rounded-lg bg-[#253040] border border-[#354e63]"><p className="text-xs text-slate-500 mb-1">Current</p><StatusBadge status={application.status}/></div>
+                      <Icon name="arrow-right" size={20} className="text-slate-600"/>
+                      <div className="flex-1">
+                        <p className="text-xs text-slate-500 mb-2">{canUseActivity?'New Status':'Current Status (view only)'}</p>
+                        <div className="flex flex-wrap gap-2">{applicationStatuses.map(s=><button key={s} disabled={!canUseActivity} onClick={()=>canUseActivity&&setNewStatus(s)} className={`px-3 py-1.5 rounded-lg border text-xs font-medium ${newStatus===s?'bg-emerald-500/20 border-emerald-500/30 text-emerald-400':canUseActivity?'bg-[#253040]/50 border-[#354e63] text-slate-300 hover:bg-[#253040]':'bg-[#253040]/20 border-[#354e63]/40 text-slate-500 cursor-not-allowed'}`}>{s}</button>)}</div>
+                      </div>
+                    </div>
+                    {canUseActivity&&<>
+                      <textarea value={statusComment} onChange={e=>setStatusComment(e.target.value)} placeholder="Add a comment about this status change..." className="w-full px-4 py-3 bg-[#253040] border border-[#354e63] rounded-xl text-sm text-white placeholder:text-slate-500 resize-none" rows={2}/>
+                      <button onClick={handleStatusUpdate} disabled={newStatus===application.status} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm disabled:opacity-50">Update Status</button>
+                    </>}
+                  </div>
+                )}
+                {activityTab==='comments'&&(
+                  <div className="space-y-4 p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                    {canAddComments ? <>
+                      <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Type your comment here..." className="w-full px-4 py-3 bg-[#253040] border border-[#354e63] rounded-xl text-sm text-white placeholder:text-slate-500 resize-none" rows={3}/>
+                      <button onClick={handleAddComment} disabled={!newComment.trim()} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm disabled:opacity-50">Add Comment</button>
+                    </> : <p className="text-sm text-slate-500 italic">You do not have permission to add comments on this application.</p>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeSection==='history'&&<EventTimeline events={events}/>}
+
+            {/* ── Accounts ── */}
+            {activeSection==='accounts'&&(
+              <div className="space-y-6">
+                <h3 className="text-lg font-semibold text-white">Accounts</h3>
+                <div className="p-5 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                  <h4 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Icon name="wallet" size={18} className="text-blue-400"/> Deposit Account</h4>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div><label className="text-xs text-slate-500 block mb-1">Account Number</label><p className="text-sm text-white font-mono">{application.depositAccount.accountNumber}</p></div>
+                    <div><label className="text-xs text-slate-500 block mb-1">Tier</label><p className="text-sm text-white">Tier {application.depositAccount.tier}</p></div>
+                    <div><label className="text-xs text-slate-500 block mb-1">Balance</label><p className="text-sm text-emerald-400 font-semibold">₦{application.depositAccount.balance.toLocaleString()}</p></div>
+                    <div><label className="text-xs text-slate-500 block mb-1">Created On</label><p className="text-sm text-white">{formatDate(application.depositAccount.createdOn)}</p></div>
+                  </div>
+                </div>
+                {application.loanDetails ? (
+                  <div className="p-5 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                    <h4 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Icon name="landmark" size={18} className="text-green-400"/> Loan Account</h4>
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div><label className="text-xs text-slate-500 block mb-1">Loan Account ID</label><p className="text-sm text-emerald-400 font-mono">{application.loanDetails.loanAccountId}</p></div>
+                      <div><label className="text-xs text-slate-500 block mb-1">Loan Amount</label><p className="text-sm text-white font-semibold">₦{application.loanDetails.loanAmount.toLocaleString()}</p></div>
+                      <div><label className="text-xs text-slate-500 block mb-1">Interest Rate</label><p className="text-sm text-white">{application.loanDetails.interestRate}%</p></div>
+                      <div><label className="text-xs text-slate-500 block mb-1">Instalments</label><p className="text-sm text-white">{application.loanDetails.numberOfInstalments}</p></div>
+                      <div><label className="text-xs text-slate-500 block mb-1">Instalment Amount</label><p className="text-sm text-white">₦{application.loanDetails.instalmentAmount.toLocaleString()}</p></div>
+                      <div><label className="text-xs text-slate-500 block mb-1">Schedule</label><p className="text-sm text-white">{application.loanDetails.repaymentSchedule}</p></div>
+                      <div className="lg:col-span-3"><label className="text-xs text-slate-500 block mb-1">Instafin URL</label><a href={application.loanDetails.instafinUrl} target="_blank" className="text-sm text-cyan-400 hover:text-cyan-300 flex items-center gap-2">{application.loanDetails.instafinUrl}<Icon name="external-link" size={14}/></a></div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-5 rounded-xl bg-[#253040]/20 border border-[#354e63]/50 text-center">
+                    <Icon name="landmark" size={32} className="text-slate-600 mx-auto mb-2"/>
+                    <p className="text-sm text-slate-500">Loan account available after disbursement</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Leads Table ─────────────────────────────────────────────────────────
+    const LeadsTable = ({ data, onRowClick, filters, setFilters, statusFilter, onStatusFilterChange }) => {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [sortConfig, setSortConfig] = useState({ key:'createdAt', direction:'desc' });
+      const [currentPage, setCurrentPage] = useState(1);
+      const itemsPerPage = 10;
+      const filteredData = data.filter(item => {
+        const ms = item.name.toLowerCase().includes(searchTerm.toLowerCase())||item.phone.includes(searchTerm)||(item.id||'').includes(searchTerm);
+        const mStatus = !statusFilter||item.status===statusFilter;
+        const mFO = !filters?.fieldOfficers?.length||filters.fieldOfficers.includes(item.fieldOfficer);
+        return ms&&mStatus&&mFO;
+      });
+      const sortedData = [...filteredData].sort((a,b)=>{
+        if(['createdAt','updatedAt','followUpDate'].includes(sortConfig.key)){const av=a[sortConfig.key]?new Date(a[sortConfig.key]):new Date(0),bv=b[sortConfig.key]?new Date(b[sortConfig.key]):new Date(0);return sortConfig.direction==='asc'?av-bv:bv-av;}
+        return sortConfig.direction==='asc'?(a[sortConfig.key]||'').localeCompare(b[sortConfig.key]||''):(b[sortConfig.key]||'').localeCompare(a[sortConfig.key]||'');
+      });
+      const totalPages = Math.ceil(sortedData.length/itemsPerPage);
+      const paginatedData = sortedData.slice((currentPage-1)*itemsPerPage,currentPage*itemsPerPage);
+      return (
+        <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] overflow-hidden">
+          <div className="p-4 border-b border-[#2d3f52]">
+            <div className="relative max-w-md">
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={18}/></div>
+              <input type="text" placeholder="Search leads…" value={searchTerm} onChange={e=>{setSearchTerm(e.target.value);setCurrentPage(1);}} className="w-full pl-10 pr-4 py-2.5 bg-[#253040] border border-[#354e63] rounded-xl text-sm text-white placeholder:text-slate-500"/>
+            </div>
+          </div>
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full">
+              <thead><tr className="border-b border-[#2d3f52]">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">ID</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Phone</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Product</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Field Officer</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Created</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {paginatedData.map(item=>(
+                  <tr key={item.id} onClick={()=>onRowClick(item)} className="hover:bg-[#253040]/30 cursor-pointer">
+                    <td className="px-4 py-4 text-sm"><span className="text-emerald-400 font-mono">{item.id}</span></td>
+                    <td className="px-4 py-4 text-sm text-white font-medium">{item.name}</td>
+                    <td className="px-4 py-4 text-sm text-slate-300 font-mono">{item.phone}</td>
+                    <td className="px-4 py-4 text-sm"><p className="text-white">{item.productType}</p><p className="text-xs text-slate-500">{item.brand}</p></td>
+                    <td className="px-4 py-4 text-sm"><StatusBadge status={item.status}/></td>
+                    <td className="px-4 py-4 text-sm text-slate-300">{item.fieldOfficer}</td>
+                    <td className="px-4 py-4 text-sm text-slate-300">{formatDate(item.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-4 py-3 border-t border-[#2d3f52] flex items-center justify-between">
+            <p className="text-sm text-slate-500">Showing {(currentPage-1)*itemsPerPage+1}–{Math.min(currentPage*itemsPerPage,sortedData.length)} of {sortedData.length}</p>
+            <div className="flex items-center gap-2">
+              <button onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} disabled={currentPage===1} className="p-2 rounded-lg bg-[#253040] text-slate-400 disabled:opacity-50"><Icon name="chevron-left" size={18}/></button>
+              {Array.from({length:Math.min(5,totalPages)},(_,i)=>i+1).map(p=><button key={p} onClick={()=>setCurrentPage(p)} className={`w-9 h-9 rounded-lg text-sm font-medium ${currentPage===p?'bg-emerald-500/20 text-emerald-400':'bg-[#253040] text-slate-400'}`}>{p}</button>)}
+              <button onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} disabled={currentPage===totalPages} className="p-2 rounded-lg bg-[#253040] text-slate-400 disabled:opacity-50"><Icon name="chevron-right" size={18}/></button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Lead Detail ─────────────────────────────────────────────────────────
+    const LeadDetail = ({ lead, onBack, onUpdate, currentUser }) => {
+      const [isEditing, setIsEditing] = useState(false);
+      const [form, setForm] = useState({ ...lead });
+      const handleSave = () => { onUpdate({ ...lead, ...form }); setIsEditing(false); };
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <button onClick={onBack} className="p-3 rounded-xl bg-[#253040] text-white hover:bg-[#2d3f52] border border-[#354e63]"><span className="text-white text-lg leading-none">←</span></button>
+            <div className="flex-1">
+              <div className="flex items-center gap-3"><h2 className="text-xl font-bold text-white">{lead.name}</h2><StatusBadge status={lead.status}/></div>
+              <p className="text-sm text-slate-500 mt-0.5">Lead ID: {lead.id}</p>
+            </div>
+{currentUser?.role!=='EXTERNAL'&&<button onClick={()=>setIsEditing(!isEditing)} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border ${isEditing?'bg-amber-500/20 text-amber-400 border-amber-500/30':'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'}`}><Icon name={isEditing?'x':'pencil'} size={16}/>{isEditing?'Cancel':'Edit Lead'}</button>}
+          </div>
+
+          <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] p-6">
+            <div className="flex items-center justify-between mb-6"><h3 className="text-lg font-semibold text-white">Lead Details</h3>{isEditing&&<button onClick={handleSave} disabled={!form.name||!form.phone} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm disabled:opacity-50">Save Changes</button>}</div>
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+              {[{l:'Name',k:'name'},{l:'Phone',k:'phone'},{l:'Alt Phone',k:'altPhone'},{l:'Home Address',k:'homeAddress'},{l:'Product',k:'productType',opts:productTypes},{l:'Brand',k:'brand',opts:brands},{l:'Area',k:'area',opts:areas},{l:'Field Officer',k:'fieldOfficer',opts:fieldOfficers}].map(f=>(
+                <div key={f.k}><label className="text-xs text-slate-500 block mb-1">{f.l}</label>
+                {isEditing ? f.opts ? <select value={form[f.k]||''} onChange={e=>setForm({...form,[f.k]:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{f.opts.map(o=><option key={o} value={o}>{o}</option>)}</select> : <input type={f.type||'text'} value={form[f.k]||''} onChange={e=>setForm({...form,[f.k]:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/>
+                : <p className="text-sm text-white">{lead[f.k]||'—'}</p>}
+                </div>
+              ))}
+              <div><label className="text-xs text-slate-500 block mb-1">Created</label><p className="text-sm text-slate-300">{formatDate(lead.createdAt)}</p></div>
+              <div><label className="text-xs text-slate-500 block mb-1">Updated</label><p className="text-sm text-slate-300">{formatDate(lead.updatedAt)}</p></div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+
+    // ─── Auto Assignment Module ───────────────────────────────────────────────
+    const AutoAssignmentModule = ({ currentUser }) => {
+      const { state, dispatch } = useStore();
+      const [selectedStage, setSelectedStage] = useState('Application Review');
+      const [localConfig, setLocalConfig] = useState(null);
+      const [saveError, setSaveError] = useState('');
+      const [saveSuccess, setSaveSuccess] = useState(false);
+
+      const userRoles = currentUser?.roles || [currentUser?.role];
+      const isReadOnly = !userRoles.some(r => ['ADMIN_OPS','ADMIN_HEAD'].includes(r));
+
+      // Load stage config into local editable state when stage changes
+      useEffect(() => {
+        const cfg = state.assignmentConfig[selectedStage];
+        if(cfg) setLocalConfig({ roles: [...cfg.roles], weights: { ...cfg.weights } });
+      }, [selectedStage, state.assignmentConfig]);
+
+      const allWorkRoles = ['ARO','UW','OM','FM'];
+
+      // Get eligible users for local config roles
+      const getEligibleUsers = (roles) =>
+        state.users.filter(u => {
+          const uRoles = u.roles || [u.role];
+          return roles.some(r => uRoles.includes(r));
+        });
+
+      const eligibleUsers = localConfig ? getEligibleUsers(localConfig.roles) : [];
+      const weightTotal = localConfig
+        ? eligibleUsers.reduce((sum, u) => sum + (Number(localConfig.weights[u.id]) || 0), 0)
+        : 0;
+
+      const handleRoleToggle = (role) => {
+        if(!localConfig) return;
+        const newRoles = localConfig.roles.includes(role)
+          ? localConfig.roles.filter(r => r !== role)
+          : [...localConfig.roles, role];
+        // When roles change, ensure new users get 0 weight; removed users' weights are dropped on save
+        const newEligible = getEligibleUsers(newRoles);
+        const newWeights = { ...localConfig.weights };
+        newEligible.forEach(u => { if(newWeights[u.id] === undefined) newWeights[u.id] = 0; });
+        setLocalConfig({ roles: newRoles, weights: newWeights });
+        setSaveError(''); setSaveSuccess(false);
+      };
+
+      const handleWeightChange = (userId, val) => {
+        const num = Math.max(0, Math.min(100, parseInt(val) || 0));
+        setLocalConfig(c => ({ ...c, weights: { ...c.weights, [userId]: num } }));
+        setSaveError(''); setSaveSuccess(false);
+      };
+
+      const handleSave = () => {
+        if(weightTotal !== 100) {
+          setSaveError(`Weights must sum to 100%. Current total: ${weightTotal}%.`);
+          setSaveSuccess(false);
+          return;
+        }
+        dispatch({ type:'SAVE_ASSIGNMENT_CONFIG', stageId: selectedStage, config: { ...localConfig } });
+        setSaveError('');
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2500);
+      };
+
+      // Assignment stats for display
+      const getAssignmentStats = (stageId) => {
+        const cfg = state.assignmentConfig[stageId];
+        if(!cfg) return [];
+        return state.users
+          .filter(u => {
+            const uRoles = u.roles || [u.role];
+            return cfg.roles.some(r => uRoles.includes(r));
+          })
+          .map(u => {
+            const count = state.applications.filter(a => a.backOfficeUser === u.name).length;
+            return { ...u, count, weight: cfg.weights[u.id] || 0 };
+          });
+      };
+
+      const stageColors = {
+        'Application Review': 'blue',
+        'Credit Review':      'purple',
+        'Approved':           'green',
+        'Loan Ready':         'amber',
+      };
+
+      const stageBadge = (s) => {
+        const c = stageColors[s];
+        const map = { blue:'bg-blue-500/15 text-blue-300 border-blue-500/25', purple:'bg-purple-500/15 text-purple-300 border-purple-500/25', green:'bg-emerald-500/15 text-emerald-300 border-emerald-500/25', amber:'bg-amber-500/15 text-amber-300 border-amber-500/25' };
+        return map[c] || map.blue;
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <h1 className="text-xl font-semibold text-white">Auto Assignment</h1>
+              <p className="text-sm text-slate-400 mt-1">Configure weighted round-robin assignment for each pipeline stage.</p>
+            </div>
+            {isReadOnly && (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700/40 border border-[#354e63] text-xs text-slate-400">
+                <Icon name="eye" size={13}/> View Only
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-12 gap-6">
+            {/* ── Stage list ── */}
+            <div className="col-span-3">
+              <div className="bg-[#1e2d3d] border border-[#2d3f52] rounded-2xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-[#2d3f52]">
+                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">Stages</p>
+                </div>
+                {AUTO_ASSIGNMENT_STAGES.map(stage => {
+                  const stats = getAssignmentStats(stage.id);
+                  const active = stats.filter(u => u.weight > 0).length;
+                  const isSelected = selectedStage === stage.id;
+                  return (
+                    <button key={stage.id} onClick={() => { setSelectedStage(stage.id); setSaveError(''); setSaveSuccess(false); }}
+                      className={`w-full px-4 py-3.5 text-left border-b border-[#2d3f52] last:border-0 transition-colors ${isSelected ? 'bg-[#253040]' : 'hover:bg-[#253040]/50'}`}>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-sm font-medium ${isSelected ? 'text-white' : 'text-slate-300'}`}>{stage.id}</span>
+                        {isSelected && <Icon name="chevron-right" size={14} className="text-emerald-400"/>}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{active} active user{active !== 1 ? 's' : ''}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── Config panel ── */}
+            <div className="col-span-9 space-y-5">
+              {localConfig && (
+                <>
+                  {/* Stage header */}
+                  <div className="flex items-center gap-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-medium border ${stageBadge(selectedStage)}`}>{selectedStage}</span>
+                    <span className="text-sm text-slate-400">stage configuration</span>
+                  </div>
+
+                  {/* Role mapping */}
+                  <div className="bg-[#1e2d3d] border border-[#2d3f52] rounded-2xl p-5">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <p className="text-sm font-medium text-white">Role Mapping</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Users with these roles will be included in this stage's assignment pool.</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {allWorkRoles.map(role => {
+                        const active = localConfig.roles.includes(role);
+                        return (
+                          <button key={role} onClick={() => !isReadOnly && handleRoleToggle(role)} disabled={isReadOnly}
+                            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border text-sm font-medium transition-colors ${active ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-[#253040] border-[#354e63] text-slate-400'} ${!isReadOnly ? 'cursor-pointer' : 'cursor-default'}`}>
+                            <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center flex-shrink-0 ${active ? 'bg-emerald-500 border-emerald-500' : 'border-slate-500'}`}>
+                              {active && <Icon name="check" size={10}/>}
+                            </div>
+                            {role}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {localConfig.roles.length === 0 && (
+                      <p className="text-xs text-amber-400 mt-3 flex items-center gap-1.5"><Icon name="alert-triangle" size={13}/> At least one role must be selected.</p>
+                    )}
+                  </div>
+
+                  {/* Weight distribution */}
+                  <div className="bg-[#1e2d3d] border border-[#2d3f52] rounded-2xl p-5">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <p className="text-sm font-medium text-white">Assignment Weights</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Set the % of new cases each user should receive. Set to 0% for absent users.</p>
+                      </div>
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-semibold ${weightTotal === 100 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-red-500/10 border-red-500/30 text-red-400'}`}>
+                        {weightTotal}% <span className="text-xs font-normal opacity-70">/ 100%</span>
+                      </div>
+                    </div>
+
+                    {eligibleUsers.length === 0 ? (
+                      <p className="text-sm text-slate-500 text-center py-6">No users found for selected roles.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {eligibleUsers.map(u => {
+                          const w = Number(localConfig.weights[u.id]) || 0;
+                          const assignedCount = state.applications.filter(a => a.backOfficeUser === u.name).length;
+                          const uRoles = u.roles || [u.role];
+                          return (
+                            <div key={u.id} className={`flex items-center gap-4 p-3.5 rounded-xl border ${u.status === 'Inactive' ? 'border-[#2d3f52] bg-[#1a2332] opacity-60' : 'border-[#2d3f52] bg-[#253040]'}`}>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="text-sm font-medium text-white truncate">{u.name}</p>
+                                  {u.status === 'Inactive' && <span className="text-xs text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded">Inactive</span>}
+                                </div>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <p className="text-xs text-slate-400">{u.email}</p>
+                                  <span className="text-slate-600">·</span>
+                                  <p className="text-xs text-slate-500">{uRoles.join(', ')}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 flex-shrink-0">
+                                <div className="text-right">
+                                  <p className="text-xs text-slate-500">Assigned</p>
+                                  <p className="text-sm font-semibold text-slate-300">{assignedCount}</p>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <input type="number" min="0" max="100" value={w}
+                                    onChange={e => !isReadOnly && handleWeightChange(u.id, e.target.value)}
+                                    disabled={isReadOnly}
+                                    className="w-16 px-2 py-1.5 text-center bg-[#1e2d3d] border border-[#354e63] rounded-lg text-sm text-white font-medium disabled:opacity-50 focus:outline-none focus:border-emerald-500/50"/>
+                                  <span className="text-sm text-slate-400">%</span>
+                                </div>
+                                {/* Bar */}
+                                <div className="w-24 h-2 bg-[#1a2332] rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full transition-all ${w > 0 ? 'bg-gradient-to-r from-emerald-500 to-cyan-500' : 'bg-slate-700'}`}
+                                    style={{width:`${Math.min(w,100)}%`}}/>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Footer: error / save */}
+                    {!isReadOnly && (
+                      <div className="mt-4 pt-4 border-t border-[#2d3f52] flex items-center justify-between">
+                        <div>
+                          {saveError && <p className="text-xs text-red-400 flex items-center gap-1.5"><Icon name="alert-circle" size={13}/>{saveError}</p>}
+                          {saveSuccess && <p className="text-xs text-emerald-400 flex items-center gap-1.5"><Icon name="check-circle" size={13}/>Configuration saved.</p>}
+                        </div>
+                        <button onClick={handleSave} disabled={localConfig.roles.length === 0}
+                          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white text-sm font-medium disabled:opacity-50 hover:opacity-90 transition-opacity">
+                          <Icon name="save" size={14}/> Save Configuration
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Assignment activity preview */}
+                  <div className="bg-[#1e2d3d] border border-[#2d3f52] rounded-2xl p-5">
+                    <p className="text-sm font-medium text-white mb-3">Current Assignment Load</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {getAssignmentStats(selectedStage).map(u => {
+                        const target = u.weight;
+                        const total = state.applications.length;
+                        const actualPct = total > 0 ? Math.round((u.count / total) * 100) : 0;
+                        return (
+                          <div key={u.id} className="flex items-center gap-3 p-3 rounded-xl bg-[#253040] border border-[#2d3f52]">
+                            <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                              <span className="text-xs font-bold text-emerald-400">{u.name.split(' ').map(n=>n[0]).join('').slice(0,2)}</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium text-white truncate">{u.name}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <div className="flex-1 h-1.5 bg-[#1a2332] rounded-full overflow-hidden">
+                                  <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full"
+                                    style={{width:`${Math.min(actualPct,100)}%`}}/>
+                                </div>
+                                <span className="text-xs text-slate-400 flex-shrink-0">{u.count} cases</span>
+                              </div>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              <p className="text-xs text-slate-500">Target</p>
+                              <p className="text-sm font-semibold text-slate-300">{target}%</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Users Management ─────────────────────────────────────────────────────
+    const UsersManagement = ({ currentUser }) => {
+      const [users, setUsers] = useState(DEMO_USERS);
+      const [showCreateModal, setShowCreateModal] = useState(false);
+      const [showEditModal, setShowEditModal] = useState(false);
+      const [editingUser, setEditingUser] = useState(null);
+      const [editForm, setEditForm] = useState({ name:'', email:'', roles:[], status:'Active' });
+      const [searchTerm, setSearchTerm] = useState('');
+      const [createForm, setCreateForm] = useState({ name:'', email:'', roles:[], status:'Active' });
+
+      const userRoles = currentUser?.roles || [currentUser?.role];
+      const isAdminHead = userRoles.includes('ADMIN_HEAD');
+      const isAdminOps = userRoles.includes('ADMIN_OPS');
+      const isExternal = userRoles.includes('EXTERNAL') && !isAdminHead && !isAdminOps;
+      const canManage = (isAdminHead || isAdminOps) && !isExternal;
+
+      const filtered = users.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.email.toLowerCase().includes(searchTerm.toLowerCase()));
+
+      const toggleStatus = (uid) => {
+        setUsers(us=>us.map(u=>u.id===uid?{...u,status:u.status==='Active'?'Inactive':'Active'}:u));
+      };
+      const handleCreate = () => {
+        if(!createForm.name||!createForm.email) return;
+        if(!(createForm.roles||[]).length) return;
+        setUsers(us=>[...us, { id:`u${Date.now()}`, name:createForm.name, email:createForm.email, roles:createForm.roles, role:createForm.roles[0], status:'Active', createdOn: new Date().toISOString().slice(0,10) }]);
+        setCreateForm({ name:'', email:'', roles:[], status:'Active' });
+        setShowCreateModal(false);
+      };
+
+      const openEdit = (user) => {
+        setEditingUser(user);
+        setEditForm({ name:user.name, email:user.email, roles:user.roles||[user.role], status:user.status });
+        setShowEditModal(true);
+      };
+      const handleSaveEdit = () => {
+        if(!editForm.name||!editForm.email||!editForm.roles.length) return;
+        setUsers(us=>us.map(u=>u.id===editingUser.id?{...u,...editForm,role:editForm.roles[0]}:u));
+        setShowEditModal(false);
+      };
+
+      return (
+        <div className="space-y-6">
+          <Header title="Users" subtitle={`${users.length} users · ${users.filter(u=>u.status==='Active').length} active`}
+            actions={canManage&&<button onClick={()=>setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm"><Icon name="plus" size={16}/> Add User</button>} />
+
+          <div className="bg-[#1e2d3d]/50 rounded-2xl border border-[#2d3f52] overflow-hidden">
+            <div className="p-4 border-b border-[#2d3f52]">
+              <div className="relative max-w-md">
+                <Icon name="search" size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"/>
+                <input type="text" placeholder="Search by name or email..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="w-full pl-10 py-2.5 bg-[#253040] border border-[#354e63] rounded-xl text-sm text-white placeholder:text-slate-500"/>
+              </div>
+            </div>
+            <div className="overflow-x-auto scrollbar-thin">
+              <table className="w-full">
+                <thead><tr className="border-b border-[#2d3f52]">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Email</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Role</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Created On</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
+                  {canManage&&<th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">Actions</th>}
+                </tr></thead>
+                <tbody className="divide-y divide-slate-800/50">
+                  {filtered.map(u=>(
+                    <tr key={u.id} className="hover:bg-[#253040]/20">
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center text-slate-900 font-bold text-xs">{u.name.split(' ').map(n=>n[0]).join('').slice(0,2)}</div>
+                          <span className="text-sm text-white font-medium">{u.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-400">{u.email}</td>
+                      <td className="px-4 py-4"><div className="flex flex-wrap gap-1">{(u.roles||[u.role]).map(r=><UserRoleBadge key={r} role={r}/>)}</div></td>
+                      <td className="px-4 py-4 text-sm text-slate-400">{formatDate(u.createdOn)}</td>
+                      <td className="px-4 py-4">
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${u.status==='Active'?'bg-emerald-900/30 text-emerald-300 border-emerald-700/50':'bg-[#2d3f52]/30 text-slate-400 border-[#455e72]/50'}`}>{u.status}</span>
+                      </td>
+                      {canManage&&(
+                        <td className="px-4 py-4">
+                          <button onClick={()=>openEdit(u)} className="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors bg-[#253040] text-slate-300 border-[#455e72] hover:bg-[#2d3f52] hover:text-white flex items-center gap-1.5">
+                            <Icon name="pencil" size={12}/> Edit
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Edit User Modal */}
+          {showEditModal&&editingUser&&(
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={()=>setShowEditModal(false)}>
+              <div className="bg-[#1e2d3d] rounded-2xl border border-[#354e63] w-full max-w-md p-6" onClick={e=>e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-6"><h3 className="text-lg font-semibold text-white">Edit User</h3><button onClick={()=>setShowEditModal(false)} className="p-2 text-slate-400 hover:text-white"><Icon name="x" size={20}/></button></div>
+                <div className="space-y-4">
+                  <div><label className="text-xs text-slate-500 block mb-1">Full Name *</label><input type="text" value={editForm.name} onChange={e=>setEditForm({...editForm,name:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+                  <div><label className="text-xs text-slate-500 block mb-1">Work Email *</label><input type="email" value={editForm.email} onChange={e=>setEditForm({...editForm,email:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+                  <div><label className="text-xs text-slate-500 block mb-1.5">Roles <span className="text-slate-600">(multi-select)</span></label>
+                    <div className="bg-[#253040] border border-[#354e63] rounded-lg p-2 space-y-1 max-h-44 overflow-y-auto scrollbar-thin">
+                      {Object.entries(ROLES).map(([k,v])=>(
+                        <label key={k} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#2d3f52]/50 cursor-pointer">
+                          <div onClick={()=>setEditForm(f=>({...f,roles:f.roles.includes(k)?f.roles.filter(r=>r!==k):[...f.roles,k]}))} className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${editForm.roles.includes(k)?'bg-emerald-500 border-emerald-500':'border-[#455e72]'}`}>{editForm.roles.includes(k)&&<Icon name="check" size={11}/>}</div>
+                          <span className="text-sm text-slate-300">{v.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {editForm.roles.length===0&&<p className="text-xs text-amber-400 mt-1">Select at least one role</p>}
+                  </div>
+                  <div><label className="text-xs text-slate-500 block mb-1">Status</label>
+                    <div className="flex gap-2">
+                      {['Active','Inactive'].map(s=>(
+                        <button key={s} onClick={()=>setEditForm({...editForm,status:s})} className={`px-4 py-2 rounded-lg text-sm font-medium border ${editForm.status===s?(s==='Active'?'bg-emerald-500/20 text-emerald-400 border-emerald-500/30':'bg-red-500/20 text-red-400 border-red-500/30'):'bg-[#253040] text-slate-400 border-[#354e63]'}`}>{s}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-3 mt-6 pt-6 border-t border-[#2d3f52]">
+                  <button onClick={()=>setShowEditModal(false)} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] text-sm">Cancel</button>
+                  <button onClick={handleSaveEdit} disabled={!editForm.name||!editForm.email||!editForm.roles.length} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm disabled:opacity-50">Save Changes</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Create User Modal */}
+          {showCreateModal&&(
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={()=>setShowCreateModal(false)}>
+              <div className="bg-[#1e2d3d] rounded-2xl border border-[#354e63] w-full max-w-md p-6" onClick={e=>e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-6"><h3 className="text-lg font-semibold text-white">Add New User</h3><button onClick={()=>setShowCreateModal(false)} className="p-2 text-slate-400 hover:text-white"><Icon name="x" size={20}/></button></div>
+                <div className="space-y-4">
+                  <div><label className="text-xs text-slate-500 block mb-1">Full Name *</label><input type="text" value={createForm.name} onChange={e=>setCreateForm({...createForm,name:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+                  <div><label className="text-xs text-slate-500 block mb-1">Work Email *</label><input type="email" value={createForm.email} onChange={e=>setCreateForm({...createForm,email:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+                  <div><label className="text-xs text-slate-500 block mb-1.5">Roles <span className="text-slate-600">(multi-select)</span></label>
+                    <div className="bg-[#253040] border border-[#354e63] rounded-lg p-2 space-y-1 max-h-44 overflow-y-auto scrollbar-thin">
+                      {Object.entries(ROLES).map(([k,v])=>(
+                        <label key={k} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#2d3f52]/50 cursor-pointer">
+                          <div onClick={()=>setCreateForm(f=>({...f, roles: (f.roles||[]).includes(k) ? (f.roles||[]).filter(r=>r!==k) : [...(f.roles||[]),k]}))} className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${(createForm.roles||[]).includes(k)?'bg-emerald-500 border-emerald-500':'border-[#455e72]'}`}>{(createForm.roles||[]).includes(k)&&<Icon name="check" size={11}/>}</div>
+                          <span className="text-sm text-slate-300">{v.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {(createForm.roles||[]).length===0&&<p className="text-xs text-amber-400 mt-1">Select at least one role</p>}
+                  </div>
+                  <p className="text-xs text-slate-500">New users are set to <strong className="text-emerald-400">Active</strong> by default. An invitation email will be sent to their work email.</p>
+                </div>
+                <div className="flex justify-end gap-3 mt-6 pt-6 border-t border-[#2d3f52]">
+                  <button onClick={()=>setShowCreateModal(false)} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63] text-sm">Cancel</button>
+                  <button onClick={handleCreate} disabled={!createForm.name||!createForm.email||!(createForm.roles||[]).length} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm disabled:opacity-50">Add User</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ─── Modals (Create Lead, Bulk Upload) ───────────────────────────────────
+    const CreateLeadModal = ({ onClose, onCreate }) => {
+      const [form, setForm] = useState({ name:'', phone:'', altPhone:'', homeAddress:'', productType:productTypes[0], brand:brands[0], area:areas[0], fieldOfficer:fieldOfficers[0], source:'Walk-in' });
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
+          <div className="bg-[#1e2d3d] rounded-2xl border border-[#354e63] w-full max-w-lg p-6" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6"><h3 className="text-lg font-semibold text-white">Create New Lead</h3><button onClick={onClose} className="p-2 text-slate-400 hover:text-white"><Icon name="x" size={20}/></button></div>
+            <div className="space-y-4">
+              <div><label className="text-xs text-slate-500 block mb-1">Name *</label><input type="text" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+              <div><label className="text-xs text-slate-500 block mb-1">Phone *</label><input type="text" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+              <div><label className="text-xs text-slate-500 block mb-1">Home Address</label><input type="text" value={form.homeAddress} onChange={e=>setForm({...form,homeAddress:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white"/></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-xs text-slate-500 block mb-1">Product</label><select value={form.productType} onChange={e=>setForm({...form,productType:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{productTypes.map(p=><option key={p} value={p}>{p}</option>)}</select></div>
+                <div><label className="text-xs text-slate-500 block mb-1">Brand</label><select value={form.brand} onChange={e=>setForm({...form,brand:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{brands.map(b=><option key={b} value={b}>{b}</option>)}</select></div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-xs text-slate-500 block mb-1">Area</label><select value={form.area} onChange={e=>setForm({...form,area:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{areas.map(a=><option key={a} value={a}>{a}</option>)}</select></div>
+                <div><label className="text-xs text-slate-500 block mb-1">Field Officer</label><select value={form.fieldOfficer} onChange={e=>setForm({...form,fieldOfficer:e.target.value})} className="w-full px-3 py-2 bg-[#253040] border border-[#354e63] rounded-lg text-sm text-white">{fieldOfficers.map(f=><option key={f} value={f}>{f}</option>)}</select></div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6 pt-6 border-t border-[#2d3f52]">
+              <button onClick={onClose} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63]">Cancel</button>
+              <button onClick={()=>{onCreate({...form,id:String(Date.now()),status:'Created',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),followUpDate:null});onClose();}} disabled={!form.name||!form.phone} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium disabled:opacity-50">Create Lead</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const BulkUploadModal = ({ onClose }) => {
+      const sample = `name,phone,field_officer,alt_phone,home_address,product,brand,area\nJohn Doe,+2348000000000,Ahmed Musa,,24 Bode Thomas St Lagos,Vehicle Finance,Toyota,Ikeja\n`;
+      const sampleUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(sample)}`;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
+          <div className="bg-[#1e2d3d] rounded-2xl border border-[#354e63] w-full max-w-xl p-6" onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-semibold text-white">Bulk Upload Leads (CSV)</h3><button onClick={onClose} className="p-2 text-slate-400 hover:text-white"><Icon name="x" size={20}/></button></div>
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                <p className="text-sm text-slate-200 font-medium">CSV fields</p>
+                <p className="text-xs text-slate-500 mt-1">Required: <span className="text-slate-300">name, phone, field_officer, product, brand, area</span>. Optional: <span className="text-slate-300">alt_phone, home_address</span>.</p>
+                <div className="mt-3"><a href={sampleUrl} download="leads_sample.csv" className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-[#253040] border border-[#354e63] text-slate-200 text-sm hover:text-white"><Icon name="download" size={16}/> Download sample CSV</a></div>
+              </div>
+              <div className="p-4 rounded-xl bg-[#253040]/30 border border-[#354e63]">
+                <p className="text-sm text-slate-200 font-medium">Upload CSV</p>
+                <p className="text-xs text-slate-500 mt-1">Prototype note: upload does not create leads yet (no backend).</p>
+                <div className="mt-3"><input type="file" accept=".csv" className="w-full text-sm text-slate-300 file:mr-3 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-[#253040] file:text-slate-200 hover:file:text-white file:cursor-pointer"/></div>
+              </div>
+            </div>
+            <div className="flex justify-end mt-6 pt-6 border-t border-[#2d3f52]"><button onClick={onClose} className="px-4 py-2 rounded-xl bg-[#253040] text-slate-400 border border-[#354e63]">Close</button></div>
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Role-aware getFilteredApplications ─────────────────────────────────
+    const getRoleApplications = (applications, roles, userName) =>
+      applications.filter(a => a.backOfficeUser === userName);
+
+    // ─── Root app: owns the global store ─────────────────────────────────────
+    const LOSDashboardInner = () => {
+      const { state, dispatch } = useStore();
+      const { applications, leads } = state;
+
+      const [currentUser, setCurrentUser] = useState(null);
+      const [activeTab, setActiveTab] = useState(null);
+      const [selectedApplication, setSelectedApplication] = useState(null);
+      const [selectedLead, setSelectedLead] = useState(null);
+      const [appFilters, setAppFilters] = useState({ fieldOfficers:[], backOfficeUsers:[] });
+      const [appStatusFilter, setAppStatusFilter] = useState(null);
+      const [leadStatusFilter, setLeadStatusFilter] = useState(null);
+      const [leadFilters, setLeadFilters] = useState({ fieldOfficers:[] });
+      const [showCreateLead, setShowCreateLead] = useState(false);
+      const [showBulkUpload, setShowBulkUpload] = useState(false);
+
+      // When selectedApplication ID is set, always read the latest version from the store
+      const currentApp = selectedApplication
+        ? applications.find(a => a.id === selectedApplication.id) || selectedApplication
+        : null;
+
+      const handleLogin = (user) => {
+        setCurrentUser(user);
+        const roles = user.roles || [user.role];
+        const hasWorkRole = roles.some(r => ['ARO','UW','OM','FM'].includes(r));
+        const hasAdminRole = roles.some(r => ['ADMIN_OPS','ADMIN_HEAD'].includes(r));
+        if (hasAdminRole) setActiveTab('applications');
+        else if (hasWorkRole) setActiveTab('my-applications');
+        else setActiveTab('applications');
+      };
+
+      const handleLogout = () => { setCurrentUser(null); setActiveTab(null); setSelectedApplication(null); };
+
+      if (!currentUser) return <LoginScreen onLogin={handleLogin}/>;
+
+      const role = currentUser.role;
+      const userRoles = currentUser.roles || [role];
+      const roleApps = getRoleApplications(applications, userRoles, currentUser.name);
+      const canCreateLead = userRoles.some(r=>['ADMIN_OPS','ADMIN_HEAD'].includes(r));
+
+      return (
+        <div className="min-h-screen bg-[#1a2332]">
+          <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} setSelectedItem={()=>{setSelectedApplication(null);setSelectedLead(null);}} currentUser={currentUser} onLogout={handleLogout}/>
+          <main className="ml-56 p-8 min-h-screen">
+            {/* Applications (full view - Admin Ops/Head/External) */}
+            {activeTab==='applications'&&!selectedApplication&&(
+              <>
+                <Header title="Applications" subtitle={`${applications.length} total`}/>
+                <StatusSummary data={applications} statuses={applicationStatuses} type="Applications" selectedStatus={appStatusFilter} onStatusSelect={setAppStatusFilter}/>
+                <ApplicationsTable data={applications} onRowClick={setSelectedApplication} filters={appFilters} setFilters={setAppFilters} statusFilter={appStatusFilter} onStatusFilterChange={setAppStatusFilter} currentUser={currentUser}/>
+              </>
+            )}
+            {/* Unassigned (sidebar module) */}
+            {activeTab==='unassigned'&&!selectedApplication&&(
+              <>
+                <Header title="Unassigned Cases" subtitle="Cases missing officer assignments"/>
+                <UnassignedSection data={applications} onRowClick={(app)=>{setSelectedApplication(app);}} fullPage={true}/>
+              </>
+            )}
+            {/* My Applications (BO-filtered) */}
+            {activeTab==='my-applications'&&!selectedApplication&&(
+              <>
+                <Header title="My Applications" subtitle={`${roleApps.length} cases assigned to me`}/>
+                <StatusSummary data={roleApps} statuses={applicationStatuses} type="Applications" selectedStatus={appStatusFilter} onStatusSelect={setAppStatusFilter} hideZero={true}/>
+                <ApplicationsTable data={roleApps} onRowClick={setSelectedApplication} filters={appFilters} setFilters={setAppFilters} statusFilter={appStatusFilter} onStatusFilterChange={setAppStatusFilter} currentUser={currentUser}/>
+              </>
+            )}
+            {(activeTab==='applications'||activeTab==='my-applications'||activeTab==='unassigned')&&selectedApplication&&(
+              <ApplicationDetail application={currentApp} onBack={()=>setSelectedApplication(null)} currentUser={currentUser}/>
+            )}
+            {/* Leads */}
+            {activeTab==='leads'&&!selectedLead&&(
+              <>
+                <Header title="Leads" subtitle={`${leads.length} total`}
+                  actions={canCreateLead&&<div className="flex items-center gap-3"><button onClick={()=>setShowBulkUpload(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#253040] border border-[#354e63] text-slate-200 font-medium text-sm hover:text-white"><Icon name="upload" size={16}/> Bulk Upload</button><button onClick={()=>setShowCreateLead(true)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm"><Icon name="plus" size={16}/> Create Lead</button></div>}/>
+                <StatusSummary data={leads} statuses={leadStatuses} type="Leads" selectedStatus={leadStatusFilter} onStatusSelect={setLeadStatusFilter}/>
+                <LeadsTable data={leads} onRowClick={setSelectedLead} filters={leadFilters} setFilters={setLeadFilters} statusFilter={leadStatusFilter} onStatusFilterChange={setLeadStatusFilter}/>
+              </>
+            )}
+            {activeTab==='leads'&&selectedLead&&<LeadDetail lead={selectedLead} onBack={()=>setSelectedLead(null)} onUpdate={u=>{dispatch({type:'UPDATE_LEAD',lead:u});setSelectedLead(u);}} currentUser={currentUser}/>}
+            {/* Users */}
+            {activeTab==='users'&&<UsersManagement currentUser={currentUser}/>}
+            {activeTab==='auto-assignment'&&<AutoAssignmentModule currentUser={currentUser}/>}
+          </main>
+          {showCreateLead&&<CreateLeadModal onClose={()=>setShowCreateLead(false)} onCreate={l=>{dispatch({type:'CREATE_LEAD',lead:l});setShowCreateLead(false);}}/>}
+          {showBulkUpload&&<BulkUploadModal onClose={()=>setShowBulkUpload(false)}/>}
+        </div>
+      );
+    };
+
+    const LOSDashboard = () => {
+      const initialState = {
+        applications: generateMockApplications(),
+        leads: generateMockLeads(),
+        users: DEMO_USERS,
+        appStore: {},
+        assignmentConfig: buildInitialAssignmentConfig(DEMO_USERS),
+        // Track which apps have been assigned at each stage to prevent re-assignment
+        assignedApps: {}, // { [appId]: Set of stage names already assigned }
+      };
+      const [state, dispatch] = useReducer(storeReducer, initialState);
+      return (
+        <StoreContext.Provider value={{ state, dispatch }}>
+          <LOSDashboardInner />
+        </StoreContext.Provider>
+      );
+    };
+
+    ReactDOM.render(<LOSDashboard/>, document.getElementById('root'));
+  </script>
+</body>
+</html>
